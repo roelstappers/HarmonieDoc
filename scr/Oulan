@@ -1,0 +1,131 @@
+#!/bin/bash
+#
+#
+# Oulan: observation preprocessing
+# 
+# Arguments: none
+#
+# - Create the OBSOUL file to be used by BATOR ( Oulan )
+#
+
+. header.sh
+
+cd $WRK
+WDIR=oulan
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#-----------------------------------------------------------------------
+# Initialisation of HARMONIE environment - directories and other stuff 
+#------------------------------------------------------------------------
+
+. include.ass
+
+#--- Namelist
+NAMELIST=$WRK/$WDIR/namelist_oulan
+Get_namelist oulan $NAMELIST
+
+ln -s $WRK/splitObs/* .
+  
+SDATE=`echo ${DTG} | cut -c 1-8`
+SHOUR=`echo ${DTG} | cut -c 9-10`
+  
+# Set Oulan ZONEA limits to reduce input to ODBs
+$BINDIR/domain_prop_grib_api $CLIMDIR/m$MM -f -MAX_EXT > foo$$
+OULEAST=$( tail -1 foo$$ | head -1 | sed 's/ //g')
+OULNORTH=$( tail -2 foo$$ | head -1 | sed 's/ //g' )
+OULWEST=$( tail -3 foo$$ | head -1 | sed 's/ //g' )
+OULSOUTH=$( tail -4 foo$$ | head -1 | sed 's/ //g' )
+
+if [ $LNEWSYNOPBUFR -eq 1 ]; then
+  SLNEWSYNOPBUFR=".TRUE."
+else
+  SLNEWSYNOPBUFR=".FALSE."
+fi
+if [ $LNEWSHIPBUFR -eq 1 ]; then
+  SLNEWSHIPBUFR=".TRUE."
+else
+  SLNEWSHIPBUFR=".FALSE."
+fi
+if [ $LNEWBUOYBUFR -eq 1 ]; then
+  SLNEWBUOYBUFR=".TRUE."
+else
+  SLNEWBUOYBUFR=".FALSE."
+fi
+if [ $LNEWTEMPBUFR -eq 1 ]; then
+  SLNEWTEMPBUFR=".TRUE."
+else
+  SLNEWTEMPBUFR=".FALSE."
+fi
+if [ "$MODESEHS_OBS" -eq 1 ]; then
+  SEDMODES="s/nothingtodo/&/" # donot change namelist for Mode-S EHS
+else
+  SEDMODES="s/NBMODES=.*/NBMODES=0,/"
+fi
+
+sed -e "s/DDATE/$SDATE/"      \
+    -e "s/HHOUR/$SHOUR/"      \
+    -e "s/SALOOZA/$OULWEST/"  \
+    -e "s/SALANZA/$OULNORTH/"  \
+    -e "s/SALOEZA/$OULEAST/"  \
+    -e "s/SALASZA/$OULSOUTH/" \
+    -e "s/SLNEWSYNOPBUFR/$SLNEWSYNOPBUFR/" \
+    -e "s/SLNEWSHIPBUFR/$SLNEWSHIPBUFR/" \
+    -e "s/SLNEWBUOYBUFR/$SLNEWBUOYBUFR/" \
+    -e "s/SLNEWTEMPBUFR/$SLNEWTEMPBUFR/" \
+    -e "$SEDMODES" \
+    $NAMELIST > NAMELIST ||   \
+    { echo "No NAMELIST to run OULAN!" ; exit 1 ; }
+
+# Create the OBSOUL file to be given to BATOR
+$BINDIR/oulan || { echo "OULANBUFR failed" ; exit 1 ; }
+  
+if [ $GNSS_OBS -eq 1 ] ; then
+  #GNSS (GB GPS observations)
+  
+  # Creating OBSOUL.gnss file                                                  
+  echo " Creating OBSOUL.gnss file "
+
+  GNSStoOBSOUL || exit
+  echo " Oulan: OBSOUL.gnss created "
+  #2.2)White List YES                                                             
+  
+  ln -sf ${HM_LIB}/nam/list.gpssol list_gpssol
+
+cat > fort.4 <<EOF
+&namgpssol
+IMODEL=2,
+LSTATIC_BIAS=$LSTATIC_BIAS,
+ROBSERRS=0.012
+/
+EOF
+
+  if [ -s list_gpssol ] ; then
+    ${MPPEXEC} ${BINDIR}/PREGPSSOL || exit 1
+    echo " Oulan: OBSOUL.gpssol created  "
+    mv OBSOUL OBSOUL.conv
+    echo "Oulan: WHITE LIST in gnss USED "
+    if [ -s OBSOUL.gpssol ] ; then
+      echo 'OBSOUL.gpssol created'
+      cat OBSOUL.conv OBSOUL.gpssol > OBSOUL
+    else
+      echo 'No OBSOUL.gpssol, GNSS not used'
+      cat OBSOUL.conv > OBSOUL
+    fi
+  else
+    echo "Oulan: NO WHITE LIST: gnss NOT used "
+    mv OBSOUL OBSOUL.conv
+    if [ -s OBSOUL.gnss ] ; then
+      cat OBSOUL.conv OBSOUL.gnss > OBSOUL
+    else
+      cat OBSOUL.conv > OBSOUL
+    fi
+  fi 
+fi
+
+# Normal exit
+cd ..
+#rm -fr $WDIR
+trap - 0
+exit

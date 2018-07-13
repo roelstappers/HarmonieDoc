@@ -1,0 +1,76 @@
+#!/bin/bash
+
+. header.sh
+
+
+#
+# Extract difference between HM_LIB/src and ROOTPACK and 
+# rsync the difference to HOMEPACK
+# 
+# A file is rsync'd if it differs or does not exist 
+# in ROOTPACK
+#
+
+#
+# Check environment variables and directories
+#
+
+ROOTDIR=$ROOTPACK/${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION/src/local
+[[ -s $ROOTDIR ]] || { echo "ROOTDIR directory $ROOTDIR does not exist" ; exit ; }
+
+TARGET=$HOMEPACK/gmkpack_build/src/local
+[[ -s $TARGET ]] || { echo "Target directory $TARGET does not exist" ; exit ; }
+
+
+#
+# First check the difference between TARGET and HM_LIB
+# Remove files that are no longer in HM_LIB
+#
+
+cd $TARGET || exit
+
+for PROJ in $( ls -1 . | grep -v aeolus ) ; do
+  for FILE in $( find $PROJ -type f | grep -v svn | grep -v "\.o" | grep -v "\.mod" | grep -v "\.intfb" | grep -v "\.lst" ) ; do
+    if [ -s $HM_LIB/src/$FILE ] ; then
+       ${RSYNC-rsync} -auv $HM_LIB/src/$FILE $TARGET/$FILE || exit 
+    else
+       F=`perl -e '$_ ="'"$FILE"'"; @_=split(/\./); pop(@_) ; $_=join(".",@_);print "$_";'`
+       rm -f $TARGET/${F}.*
+    fi
+  done
+done
+
+
+#
+# Loop over all projects, find files and compare them
+# Exclude aeolus project
+#
+
+
+if [ -s $HM_LIB/src ] ; then
+
+   cd $HM_LIB/src || exit
+
+   echo "Compare files under $PWD"
+
+   for PROJ in $( ls -1 . | grep -v aeolus ) ; do
+     for FILE in $( find $PROJ -type f | grep -v svn ) ; do
+
+       DO_SYNC=0
+       
+       if [ -s $ROOTDIR/$FILE ] ; then
+         diff $FILE $ROOTDIR/$FILE > /dev/null || DO_SYNC=1
+       else
+         DO_SYNC=1
+       fi
+   
+       if [ $DO_SYNC -eq 1 ] ; then
+          ${RSYNC-rsync} -auvR $FILE $TARGET/ || exit 
+       fi
+   
+     done
+   done
+
+fi
+
+trap - 0

@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Extract the forecast length to process
+MLL=${1?"Usage: $0 [options] hour"}
+MLL3=$( perl -e "printf('%03d', '$MLL')" )
+ 
+# Get boundary
+
+BDLLMAX=$(( ((( $LL - 1 ) / $BDINT) +1 ) * $BDINT ))
+if [ $MLL -le $BDLLMAX ] ; then
+
+    # Get file name from the boundary strategy file
+    OUTFILE=$( grep "${MLL3}|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+
+    # Special case of SLAF perturbed "control"
+    ext=
+    if [ $MLL -eq 0 -a $ENSMBR -eq $ENSCTL ]; then
+	# Trick gl to produce an unperturbed boundary file
+	SLAFLAG=0
+	ext=_nopert
+    fi
+
+    ExtractBD $MLL $WRK/bdstrategy bd $ext || exit
+
+    if [ "$SLAFLAG" -gt 0 ] ; then 
+
+        # Extract an extra boundary file in case of SLAF
+	MLL_SLAF=$(( $MLL + $SLAFLAG ))
+	ExtractBD $MLL_SLAF $WRK/bdstrategy_slaf slaf || exit
+	
+    fi
+
+    #
+    # if outfile not found call gl for interpolation
+    #
+
+    if [ -s $OUTFILE ] ; then
+  
+	echo gl: Found $OUTFILE
+
+    else
+
+        # Initial file or not?
+	INITIAL_FILE=no
+	[ $MLL -eq 0 ] && INITIAL_FILE=yes
+
+        # Interpolate boundary with gl
+	gl_bd -h $MLL -i $WRK/bdinput_${MLL}$ext -o $OUTFILE$ext -c $CLIMDIR -f $INITIAL_FILE || exit
+
+    fi
+
+fi

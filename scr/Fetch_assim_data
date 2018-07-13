@@ -1,0 +1,249 @@
+#!/bin/bash
+#
+#
+# Prepare assimilation constants and similar data
+# - Background errors
+# - Varbc data
+#
+
+. header.sh
+. functions.ksh
+. include.ass
+
+LOCKFILE=$HM_DATA/fetch_assim_data.loc
+trap "rm -f $LOCKFILE" 0
+
+function dlocvarbc () {
+
+  local  __resultvar=$2
+  local  dloc
+
+  YY=`mandtg -year $1`
+  MM=`mandtg -month $1`
+  DD=`mandtg -day $1`
+  HH=`mandtg -hour $1`
+
+  dloc=$( ArchDir $ARCHIVE_ROOT $YY $MM $DD $HH )
+
+#OV begin
+  if [ ! -s "$dloc/VARBC.cycle" ]; then
+      dloc=$ARCHIVE_ROOT/VARBC_latest
+      [ ${ENSMBR--1} -ge 0 ] && dloc=$dloc/mbr$ENSMBR
+      echo "No file available for $YY $MM $DD $HH, switched to $dloc"
+  fi
+#OV end
+
+ eval $__resultvar="'$dloc'"
+
+}
+
+function fetch_varbc_file () {
+
+ SEARCH_DTG=$1
+ maxtries=$2
+ local  __resultvar=$3
+ local hh=`mandtg -hour $1`
+
+ ntries=1
+
+ while [ $ntries -le $maxtries ] ; do
+
+  dlocvarbc $SEARCH_DTG DLOCVARBC
+	  
+  if [ ! -s $DLOCVARBC/VARBC.cycle ] ; then
+	      
+     # Fetch data from archive (ECFS)
+     if [ "$COMPCENTRE" = "ECMWF" ]; then
+		  adir=$( ArchDir $HM_EXP $YY $MM $DD $HH )
+		  Access_lpfs -from $adir/odb_stuff.tar $DLOCVARBC/. && {
+		      cd $DLOCVARBC
+		      tar xvf odb_stuff.tar VARBC.cycle
+		      cd -
+		  } 
+		  ntries=$(( $maxtries + 1 ))
+	 else
+	     if [ -s "$DLOCVARBC/VARBC.cycle.$hh" ]; then
+		 # got it, no need to search backwards
+		 ntries=$(( $maxtries + 1 ))
+	     else
+		 echo "$DLOCVARBC/VARBC.cycle.$hh not found"
+		 SEARCH_DTG=$( mandtg $SEARCH_DTG + -24 )
+		 ntries=$(( $ntries + 1 ))
+	     fi
+	 fi
+   else
+	 ntries=$(( $maxtries + 1 ))
+   fi
+ done
+
+ eval $__resultvar="'$SEARCH_DTG'"
+
+}
+
+#
+# Fetch and unzip Jb-statistics
+# Prevent several EPS members fetching data at the same time by
+# locking the process
+#
+
+lockfile.sh $LOCKFILE
+
+JBFOUND=1
+for F in $f_JBCV $f_JBBAL ; do
+   if [ ! -s ${HM_LIB}/const/jb_data/$F ] ; then
+     [[ -s ${HM_LIB}/const/jb_data/$F.gz ]] || \
+     { Access_lpfs -from $JBDIR/$F.gz ${HM_LIB}/const/jb_data/. || JBFOUND=0 ; }
+     [[ $JBFOUND -eq 1 ]] && gunzip -f ${HM_LIB}/const/jb_data/$F.gz
+   fi
+done
+
+# If we did not find functions and JB_INTERPOL is true we interpolate them!
+if [ "$JB_INTERPOL" == "yes" -a "$JBFOUND" -eq "0" ]; then
+
+  # Interpolate statistics
+  mm=`mandtg -month $DTG`
+  jbconv.sh $VLEV $CLIMDIR/m$mm || exit 1
+elif [ "$JB_INTERPOL" != "yes" -a "$JBFOUND" -eq "0" ]; then
+
+  # Can not continue if they were not found and JB_INTERPOL is not yes
+  echo "Could not find structure functions for DOMAIN=$DOMAIN and VLEV=$VLEV"
+  echo "Please generate your own or set JB_INTERPOL=yes"
+  exit 1
+fi
+
+rm -f $LOCKFILE
+
+#
+# Fetch VARBC coefficients
+#
+
+if [ $LVARBC = "T" ]; then
+
+   PREV_DATE=`mandtg $DTG + -24`
+    BEG_DIFF=`mandtg $DTG - $DTGBEG`
+   [ "$RUNNING_MODE" = "operational" ] && BEG_DIFF=9999 
+
+
+   if [  $BEG_DIFF -le 30 -a "$VARBC_COLD_START" == "no" ]; then
+
+     #
+     # Start from available data
+     #
+
+   [[ $FCINT -eq 6 ]] && hhi='00 06 12 18'
+   [[ $FCINT -eq 3 ]] && hhi='00 03 06 09 12 15 18 21'
+
+     for hh in $hhi ; do
+
+       CHECK_DATE=`mandtg $PREV_DATE + $hh`
+
+         dlocvarbc $CHECK_DATE DLOCVARBC
+
+       [[ -s ${DLOCVARBC} ]] || mkdir -p ${DLOCVARBC}
+
+       # Fetch data 
+       if [ ! -s ${DLOCVARBC}/VARBC.cycle ] ; then
+        
+         echo "Fetch the data from $HM_LIB/const/bias_corr"
+         # Set the proper VARBC period for coefficients
+         case $MM in
+           10|11|12|01|02|03)
+             EMONTH=WINTER
+           ;;
+           04|05|06|07|08|09)
+             EMONTH=SUMMER
+           ;;
+           *)
+             echo "This should never happen. MM is $MM"
+             exit 1
+         esac 
+
+         cp $HM_LIB/const/bias_corr/VARBC.cycle.$DOMAIN.$EMONTH.$HH ${DLOCVARBC}/VARBC.cycle || \
+         { echo "Could not find cold start VARBC data VARBC.cycle.$EMONTH.$HH" ; exit 1 ; }
+              ls -lrt ${DLOCVARBC}
+       fi
+
+     done
+
+   fi
+
+   if [ \( "$VARBC_COLD_START" = "yes" -a $BEG_DIFF -gt 30 \) -o "$VARBC_COLD_START" = "no" ]; then
+
+
+     #
+     # Find a suitable VARBC file
+     #
+     
+     maxtries=1
+     [ "$RUNNING_MODE" = "operational" ] && maxtries=7
+     fetch_varbc_file $PREV_DATE $maxtries FINAL_DTG
+     dlocvarbc $FINAL_DTG VARBC_dir0
+
+     [ -s $VARBC_dir0/VARBC.cycle -o -s $VARBC_dir0/VARBC.cycle.$HH ] || \
+        { echo "You don't have a VARBC table in $VARBC_dir0 from an earlier run" ; exit 1 ; }
+
+     [ -s $VARBC_dir0/VARBC.cycle.$HH ] && VARBC_dir0_file=$VARBC_dir0/VARBC.cycle.$HH
+     [ -s $VARBC_dir0/VARBC.cycle ] && VARBC_dir0_file=$VARBC_dir0/VARBC.cycle
+
+     if [ $GNSS_OBS -eq 1 -a $LVARBC_GNSS = "T" ] ; then
+
+       #
+       # Merge data from different cycles if GNSS enabled
+       #
+
+       PREV_CYC1=`mandtg $DTG + -$FCINT`
+       PREV_CYC2=`mandtg $DTG + -$(( FCINT * 2 ))`
+
+       fetch_varbc_file $PREV_CYC1 1 FINAL_DTG1
+       fetch_varbc_file $PREV_CYC2 1 FINAL_DTG2
+
+       dlocvarbc $PREV_CYC1 VARBC_dir1
+       dlocvarbc $PREV_CYC2 VARBC_dir2
+
+       hh1=`mandtg -hour $FINAL_DTG1`
+       hh2=`mandtg -hour $FINAL_DTG2`
+
+       [ -s $VARBC_dir1/VARBC.cycle.$hh1 ] && VARBC_dir1_file=$VARBC_dir1/VARBC.cycle.$hh1
+       [ -s $VARBC_dir1/VARBC.cycle ] && VARBC_dir1_file=$VARBC_dir1/VARBC.cycle
+
+       [ -s $VARBC_dir2/VARBC.cycle.$hh2 ] && VARBC_dir2_file=$VARBC_dir2/VARBC.cycle.$hh2
+       [ -s $VARBC_dir2/VARBC.cycle ] && VARBC_dir2_file=$VARBC_dir2/VARBC.cycle
+
+       [[ -s $VARBC_dir1_file ]] || \
+            { echo "You don't have a VARBC table in $VARBC_dir1_file from an earlier run" ; exit 1 ; }
+       [[ -s $VARBC_dir2_file ]] || \
+            { echo "You don't have a VARBC table in $VARBC_dir2_file from an earlier run" ; exit 1 ; }
+
+       echo "Merging the following VARBC files for $DTG"
+       echo " As 24h old file $VARBC_dir0_file"
+       echo " As  3h old file $VARBC_dir1_file"
+       echo " As  6h old file $VARBC_dir2_file"
+
+       cp $VARBC_dir0_file $WRK/VARBC.cycle.3
+       cp $VARBC_dir1_file $WRK/VARBC.cycle.1
+       cp $VARBC_dir2_file $WRK/VARBC.cycle.2
+
+       # Store VARBC files for diagnostics
+       cp $VARBC_dir0_file $ARCHIVE/VARBC.cycle.3
+       cp $VARBC_dir1_file $ARCHIVE/VARBC.cycle.1
+       cp $VARBC_dir2_file $ARCHIVE/VARBC.cycle.2
+
+       cd $WRK
+       ln -sf ${HM_LIB}/nam/list.gpssol whitelist.dat || exit 1
+       Merge_VARBC_GNSS || exit 1
+       cp VARBC.cycle.out $ARCHIVE/.
+       mv VARBC.cycle.out VARBC.cycle
+       cd -
+
+     else
+       if [ -s $VARBC_dir0/VARBC.cycle ]; then
+         cp $VARBC_dir0/VARBC.cycle $WRK/VARBC.cycle
+       else
+         cp $VARBC_dir0/VARBC.cycle.$HH $WRK/VARBC.cycle
+       fi
+     fi
+   fi 
+
+fi
+
+trap 0

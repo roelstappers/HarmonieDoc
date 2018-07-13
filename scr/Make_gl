@@ -1,0 +1,52 @@
+#!/bin/bash
+
+#
+# Build gl
+# Handel local changes in IFS libs by add the changes to a
+# local copy of the main library.
+#
+#
+
+
+. header.sh
+
+# Sync possible changed sources
+
+MYTASK=`echo $TASK | awk '{print substr($1,6,20)}'`
+
+
+# Get updated IFS routines
+
+FAPATH=$HM_LIB/util/$MYTASK/$HARMONIE_CONFIG/falib
+
+[[ -s $FAPATH ]] || $MKDIR $FAPATH
+cd $FAPATH || exit
+
+FAPROJ=""
+for F in biper arpifs etrans trans algor ifsaux surfex mse mpa odb; do
+  cp $HOMEPACK/gmkpack_build/lib/lib${F}.main.a lib${F}.local.a
+  if [ -s $HOMEPACK/gmkpack_build/lib/lib${F}.local.a ] ; then
+
+   for O in $( ar -t $HOMEPACK/gmkpack_build/lib/lib${F}.local.a ) ; do 
+     ar -x $HOMEPACK/gmkpack_build/lib/lib${F}.local.a $O
+     ar -rv ./lib${F}.local.a $O
+     rm -f $O
+   done
+  fi
+  FAPROJ="$FAPROJ -l${F}.local"
+done
+
+
+# Run make
+
+cd $HM_LIB/util/$MYTASK/ || exit
+
+$MAKE ARCH=$HARMONIE_CONFIG FAINC_PATH=$HOMEPACK/gmkpack_build/ FALIB_PATH=$FAPATH || exit 1
+
+# Copy binaries to main bin directory
+[[ -s $BINDIR ]] || mkdir -p $BINDIR
+[[ -s ./$HARMONIE_CONFIG/bin ]] && cp ./$HARMONIE_CONFIG/bin/* $BINDIR/.
+
+trap - 0
+
+exit

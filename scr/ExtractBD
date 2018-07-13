@@ -1,0 +1,73 @@
+#!/bin/bash
+#
+# Extract/check boundary file given in bdstrategy
+# Input : 
+#   Forecast length to extract
+#   bdstrategy file to use
+#   MODE (none slaf|slaf)
+# 
+
+cd $WRK 
+
+if [ $# -ne 3 ] ; then
+   echo "Usage ExtractBD ML BDSTRATEGY MODE, where ML is forecast length to extract"
+   exit 1
+fi
+
+# Extract input information
+LLL=`perl -e "printf('%3.3i', '$1')"`
+BDSFILE=$2
+MODE=$3
+
+#
+# Get name of the final boundary file INT_BDFILE 
+# and the input boundary file FILE
+#
+
+INT_BDFILE=$( grep "${LLL}|" $BDSFILE | awk '{print substr($2,1)}' )
+  FULLFILE=$( grep "${LLL}|" $BDSFILE | awk '{print substr($3,1)}' )
+   FILEDIR=$( dirname  $FULLFILE ) 
+      FILE=$( basename $FULLFILE ) 
+
+if [ -s $INT_BDFILE -a "$MODE" != "slaf" ] ; then
+
+   echo "Found interpolated $INT_BDFILE"
+
+else
+
+   # Create boundary dir for interpolated file if it doesn't exist
+   INT_BDDIR=$( dirname $INT_BDFILE )
+   [[ -s $INT_BDDIR ]] || mkdir -p $INT_BDDIR
+
+   [[ -s $FILEDIR ]] || mkdir -p $FILEDIR
+   LOCKFILE=$FULLFILE.lock
+   trap "rm -f $LOCKFILE" 0
+   lockfile.sh $LOCKFILE
+   if [ ! -s $FULLFILE ] ; then
+
+      echo "Could not find $FULLFILE"
+
+      # Extract boundary file with the method given in boundary strategy
+      if [ "$ENS_BD_CLUSTER" = "yes" ] ;then
+       export ENSBDMBR=$( grep ENSBDMBR bdstrategy | perl -pe 's/(.*)(ENSBDMBR: )(.*)/$3/' )
+      fi
+
+      EXT_ACCESS=$( grep "${LLL}|" $BDSFILE )
+      EXT_ACCESS=`perl -e '$_ ="'"$EXT_ACCESS"'"; @_=split(/ /); shift @_ ; shift @_ ;shift @_ ; print "@_"'`
+      $EXT_ACCESS $FILE || { echo "Could not fullfil $EXT_ACCESS $FILE" ; exit 1 ; }
+      mv $FILE $FULLFILE
+
+   fi
+
+   echo "Extracted $FULLFILE"
+   rm -f $LOCKFILE
+
+fi
+
+if [ "$MODE" != "slaf" ] ; then
+ # Create a symbolic link to the bdinput files
+ ln -sf $FULLFILE $WRK/bdinput_$1
+fi
+
+trap - 0 
+exit

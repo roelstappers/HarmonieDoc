@@ -1,0 +1,70 @@
+#!/bin/bash -x
+
+
+#
+# Build executables/libraries with Makeup
+#
+
+. header.sh
+
+ROOTDIR=$HM_LIB export ROOTDIR
+MAKEUP_BUILD_DIR=${MAKEUP_BUILD_DIR-$ROOTDIR/$HARMONIE_CONFIG}
+
+cd $MAKEUP_BUILD_DIR/src || exit
+
+if [ -f $HM_DATA/.makeup_changes -o -f .makeup_not_complete -o "$MAKE_OWN_PRECOMPILED" == "yes" ]; then
+
+  [ -f $HM_DATA/.makeup_changes ] && echo "Building executables/libraries with Makeup because of source code changes"
+  [ -f .makeup_not_complete ] && echo "Building executables/libraries with Makeup because previous attempt did not complete"
+
+  # Run only if we have local changes or if previous makeup was unsuccessful
+  if [ -f $HM_DATA/.makeup_changes -o -f .makeup_not_complete ]; then
+    touch .makeup_not_complete
+    $MAKE CMDROOT=$MAKEUP_BUILD_DIR/util/makeup ROOT=`pwd` LIBDISK=`pwd` NPES=${NPROC-2} || exit
+  fi
+
+  #
+  # Build precompiled stuff (like rootpack in gmkpack) if requested
+  #
+
+  if [ "$MAKE_OWN_PRECOMPILED" == "yes" ] ; then
+    if [ "$PRECOMPILED" != "" ]; then
+      echo "make precompiled ROOT=$PRECOMPILED"
+
+      # On ECMWF only hlam can create PRECOMPILED
+      if [ "$COMPCENTRE" = "ECMWF" ]; then
+        if [ "$USER" == "hlam" ] ; then
+          touch .makeup_not_complete
+          $MAKE CMDROOT=$MAKEUP_BUILD_DIR/util/makeup ROOT=`pwd` LIBDISK=`pwd` PRECOMPILED=$PRECOMPILED precompiled NPES=${NPROC-2}
+          # Make this PRECOMPILED readable to hirald when user hlam creates it on ECMWF
+          chgrp -R hirald ${PRECOMPILED}
+        else
+          echo "Only user hlam can create $PRECOMPILED on ECMWF"
+        fi
+      else
+         # PRECOMPILED for other centers than ECMWF
+         touch .makeup_not_complete
+         $MAKE CMDROOT=$MAKEUP_BUILD_DIR/util/makeup ROOT=`pwd` LIBDISK=`pwd` PRECOMPILED=$PRECOMPILED precompiled NPES=${NPROC-2}
+      fi
+    else
+      echo "You can not build precompiled binaries/libraries without first setting the variable PRECOMPILED"
+      exit
+    fi
+  fi
+
+else
+  echo "No re-linking is done since no source code is updated and previous Makeup succeeded."
+fi
+
+#
+# Copy binaries to BINDIR and change names
+#
+
+[[ -s $BINDIR ]] || mkdir -p $BINDIR
+$MAKE CMDROOT=$MAKEUP_BUILD_DIR/util/makeup ROOT=`pwd` LIBDISK=`pwd` bindir BINDIR=$BINDIR NPES=${NPROC-2}
+
+
+# Normal exit
+rm -f .makeup_not_complete
+trap - 0
+exit

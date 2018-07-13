@@ -1,0 +1,62 @@
+#!/bin/bash
+
+
+#
+#-------------------------------
+# Extract ECMWF data from MARS
+#
+# Usage: MARS_umbrella  -d DATE -h HOUR -l LL  -t TARGET
+#
+# -d DATE
+#    DATE or DATESTART/to/DATEEND/by/STEP  if $COMMAND=STAGE
+#
+# -h HH
+#    HH or HOURSTART/to/HOUREND/by/STEP  if $COMMAND=STAGE
+#
+# -l LL
+#    LL or LLSTART/to/LLEND/by/STEP if $COMMAND=STAGE
+#
+# -t TARGET
+#
+# -k MODEL LL
+#
+#-------------------------------
+
+TARGET=UNDEFINED
+DATE=UNDEFINED
+HH=UNDEFINED
+LL=UNDEFINED
+COMMAND=RETRIEVE
+FILE=marsreq$$
+
+while getopts d:h:l:t:k:b: opt; do
+   case $opt in
+      d)    DATE=$OPTARG ;;
+      h)      HH=$OPTARG ;;
+      l)     LL=$OPTARG ;;
+      t)  TARGET=$OPTARG ;;
+      k)      KK=$OPTARG ;;
+   esac
+done
+
+if [ $TARGET == UNDEFINED -o $DATE == UNDEFINED -o $HH == UNDEFINED -o $LL == UNDEFINED ]; then
+  echo "Usage: $0 d DATE -h HOUR -l LL  -t TARGET"
+  echo "If you don't have any MARS client set up this script is called as the last"
+  echo "possibility but the arguments are not set properly. "
+  echo
+  echo "Make sure you have your boundaries in the right place!"
+  exit 1
+fi
+HH=`perl -e "printf('%2.2i', '$HH')"`
+H4=${HH}00
+
+if [ ${ENSMBR:--1} -ge 0 -a $BDSTRATEGY != "simulate_operational" ] ; then
+  E=$( echo ${ENSBDMBR-$ENSMBR} | perl -pe  's/^0+(\d+)/$1/' )
+  FILE_PREFETCH=$WRK/../mars_prefetch_${DATE}_${H4}+${LL}.$E
+elif [ ${ENSMBR--1} -ge 0 ] ; then
+  FILE_PREFETCH=$WRK/../mars_prefetch_${DATE}_${H4}+${LL}
+else
+  FILE_PREFETCH=$WRK/mars_prefetch_${DATE}_${H4}+$LL
+fi
+
+MARS_get_bd -k $KK -d $DATE -h $HH -l $LL -t $TARGET -i $FILE_PREFETCH || exit 1

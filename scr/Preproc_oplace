@@ -1,0 +1,213 @@
+#!/bin/sh
+
+#
+# Preproc: observation preprocessing for OPLACE
+# 
+# Arguments: none
+#
+# - Untar OPLACE hourly observations from sbz scratch
+# - Merge obsoul_ into big OBSOUL
+# - Merge bufr_ into big BUFR
+#
+
+. header.sh
+
+
+cd $WRK
+WDIR=splitObs
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#-----------------------------------------------------------------------
+# Initialisation of HARMONIE environment - directories and other stuff 
+#------------------------------------------------------------------------
+
+. include.ass
+
+if [[ $# -ne 4 ]]; then
+  echo "Problem with the arguments! DTG,DATE,TIME,RANGE,OBSLIST,OBSLIST_SAT"
+  exit 1
+else
+  ADATE=$1
+  SDATE=$2
+  TIME=$3
+  RANGE=$4
+  FDATE=`mandtg -date $DTG`
+fi
+
+
+    OBSLIST=""
+    OBSLIST_SAT=""
+
+    if [ $BUOY_OBS -eq 1 ];then
+      OBSLIST="$OBSLIST 4"
+    fi
+
+    if [ $AIRCRAFT_OBS -eq 1 ];then
+      OBSLIST="$OBSLIST 2"
+    fi
+
+    if [ $AMV_OBS -eq 1 ];then
+      OBSLIST_SAT="$OBSLIST_SAT 3"
+    fi
+
+    if [ $AMSUA_OBS -eq 1 ] || [ $AMSUB_OBS -eq 1 ] ;then
+      OBSLIST_SAT="$OBSLIST_SAT 7"
+    fi
+
+    if [ $PILOT_OBS -eq 1 ];then
+      OBSLIST="$OBSLIST 6"
+    fi
+
+    if [ $SYNOP_OBS -eq 1 ];then
+      OBSLIST="$OBSLIST 1"
+    fi
+
+    if [ $TEMP_OBS -eq 1 ];then
+      OBSLIST="$OBSLIST 5"
+    fi
+
+if [[ $SDATE -ne $FDATE ]]; then
+  [[ -s $OBDIR/oplace/$SDATE ]] || $MKDIR $OBDIR/oplace/$SDATE
+  cd $OBDIR/oplace/$SDATE
+  tar -xvf $OBDIR/operobs_${SDATE}.tar
+  [[ -s $OBDIR/oplace/$FDATE ]] || $MKDIR $OBDIR/oplace/$FDATE
+  cd  $OBDIR/oplace/$FDATE
+  tar -xvf  $OBDIR/operobs_${FDATE}.tar 
+else
+  [[ -s $OBDIR/oplace/$FDATE ]] || $MKDIR $OBDIR/oplace/$FDATE
+  cd  $OBDIR/oplace/$FDATE
+  tar -xvf  $OBDIR/operobs_${FDATE}.tar 
+fi
+
+cd $WRK
+WDIR=splitObs
+Workdir $WDIR
+
+# Create OBSOUL!
+
+for obstype in $OBSLIST; do
+  if [[ ${obstype} -eq "1" ]]; then #SYNOP
+    typeset dhh=`echo $ADATE | cut -c 9-10`
+    typeset ddate=`echo $ADATE | cut -c 1-8`
+    f_obs=obsoul_${obstype}_xxxxxx_xx_${ADATE}
+    [[ -f $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz ]] && cp $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz .
+    gzip -d ${f_obs}.gz
+    echo "${f_obs}" >> LISTFILES
+  elif [[ ${obstype} -eq "5" ]]; then #TEMP
+    typeset dhh=`echo $ADATE | cut -c 9-10`
+    typeset ddate=`echo $ADATE | cut -c 1-8`
+    f_obs=obsoul_${obstype}_xxxxxx_xx_$ADATE
+    if [[ -f $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz ]]; then
+     cp $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz .
+     gzip -d ${f_obs}.gz
+     echo "${f_obs}" >> LISTFILES
+    fi
+  elif [[ ${obstype} -eq "2" ]]; then #AMDAR
+    typeset time_range=""
+    typeset bt=$( mandtg ${ADATE} + -1 )
+    typeset et=$( mandtg ${ADATE} + 2 )
+    while [[ $bt != $et ]]; do
+      time_range="$time_range $bt"
+      bt=$( mandtg $bt + 1 )
+    done
+    for dtime in $time_range; do
+      typeset dhh=`echo $dtime | cut -c 9-10`
+      typeset ddate=`echo $dtime | cut -c 1-8`
+      f_obs=obsoul_${obstype}_xxxxxx_xx_${dtime}
+      if [[ -f $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz ]]; then
+       cp $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz .
+       gzip -d ${f_obs}.gz
+       echo "${f_obs}" >> LISTFILES
+      fi
+    done
+  fi
+done
+
+obsoul_merge.pl -files LISTFILES -obsoul OBSOUL 
+
+unset time_range bt et dtime dhh
+
+#Create BUFR for satellite
+
+for obstype in $OBSLIST_SAT; do
+  if [[ ${obstype} -eq "7" ]]; then #RADIANCE
+  typeset time_range=""
+  typeset bt=$( mandtg ${ADATE} + -3 )
+  typeset et=$( mandtg ${ADATE} + 4 )
+  while [[ $bt != $et ]]; do
+    time_range="$time_range $bt"
+    bt=$( mandtg $bt + 1 )
+  done
+#  for instr in amsua amsub mhs iasi hirs; do
+  [[ -e  inst_file ]] && \rm inst_file
+ 
+  for instr in amsua amsub mhs iasi hirs ; do
+    for sat in noaa16 noaa17 noaa18 noaa19 metop metopb; do
+
+      bufrsuf=$instr
+      [[ $instr = "amsub" ]] && bufrsuf="amsub0"
+
+      for dtime in $time_range; do
+
+        typeset dhh=`echo $dtime | cut -c 9-10`
+        typeset ddate=`echo $dtime | cut -c 1-8`
+        f_obs=bufr_${obstype}_${instr}_${sat}_${dtime}
+        if [ -f $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz ]; then
+          cp $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz .
+          gzip -d ${f_obs}.gz
+          ls -1 ${f_obs} >> inst_file
+ 
+        fi
+      
+      done
+      
+    done
+
+    [[ -s  inst_file ]] &&  cat bufr_${obstype}_${instr}_* >> ${bufrsuf}
+    [[ -e  inst_file ]] && \rm inst_file
+#    cat bufr_${obstype}_${instr}_* >> ${bufrsuf}
+   done
+   if [[ -s mhs && -s amsub0 ]] ; then
+      cat mhs amsub0 >> amsub
+      [[ $? -eq 0 ]] && rm -f mhs amsub0
+   elif [[ -s mhs ]] ; then
+      mv mhs amsub # BUFR.amsub
+   elif [[ -s amsub0 ]] ; then
+      mv amsub0 amsub # BUFR.amsub
+   fi
+  
+
+  elif [[ ${obstype} -eq "3" ]]; then #SATOB
+    typeset dhh=`echo $ADATE | cut -c 9-10`
+    typeset ddate=`echo $ADATE | cut -c 1-8`
+    f_obs=bufr_${obstype}_geowind_xx_${ADATE}
+    [[ -f $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz ]] && cp $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz .
+    gzip -d ${f_obs}.gz
+    mv ${f_obs} sato7
+  else
+    echo "This obstype $obstype is not supported by OPLACE!"
+  fi
+done
+
+unset bt et dtime ddate dhh
+
+#Get GRIB for SEVIRI
+
+typeset dhh=`echo $ADATE | cut -c 9-10`
+typeset ddate=`echo $ADATE | cut -c 1-8`
+f_obs=grib_7_seviri_xx_${ADATE}
+if [[ -f $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz ]]; then
+  cp $OBDIR/oplace/$ddate/$dhh/${f_obs}.gz .
+  gzip -d ${f_obs}.gz
+  mv ${f_obs} sevb # GRIB.sevb
+fi
+
+unset dtime dhh
+
+# Normal exit
+cd ..
+#rm -fr $WDIR
+trap - 0
+exit

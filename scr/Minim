@@ -1,0 +1,207 @@
+#!/bin/bash
+#-----------------------------------------------------------------------
+# Upper air analysis - 3DVAR (configuration 131 of ALADIN model)
+#-----------------------------------------------------------------------
+# Inputs:
+#
+#   #--first guess (the same file with 5  different names):  
+#     ICMSHMIN1INIT  ICMSHMIN1IMIN  ICMRFMIN10000   
+#     ELSCFMIN1ALBC000 ELSCFMIN1ALBC     
+#
+#   #--Input/output (CCMA) ODB directory structure, containing only 
+#      the active observations:
+#     ${d_DB}/CCMA
+#            /CCMA.${base1}
+#            ....
+#
+#   #--Constants and statistics   
+#     (1)rszcoef_fmt (2)rt_coef_atovs_newpred_ieee.dat , etc.
+#     (3)stabal96.cv (4)stabal96.bal
+#
+# Outputs:
+#   #--Upper air analysis (MXMIN1999+0000) under the name of POS2
+#   #--The minimization (update) information will be put into the 
+#      input (CCMA) ODB.
+#-----------------------------------------------------------
+#   Globals: d_STATFILES,d_CST,d_ASSIM,NBPROC,d_CCMA
+#-----------------------------------------------------------
+
+. header.sh
+. functions.ksh
+
+My_trap_handler () {
+    Cat_logs NODE.*
+    [ "$RUNNING_MODE" = operational ] && { echo "Minim failed!" >> $WRK/var_oper.dat; }
+}
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "My_trap_handler; Trapbody $WDIR" 0
+
+d_MINIM=$WRK/$WDIR
+
+
+	#-- Get Environmental variables
+        . include.ass
+
+        #--- Get Local vars
+	typeset d_DB namel
+	d_DB_MINIM=$WRK/odb_ccma
+
+	#-- enter the working dir
+	cd ${d_MINIM}
+
+#--- background error stat
+ln -sf ${HM_LIB}/const/jb_data/$f_JBCV  stabal96.cv
+ln -sf ${HM_LIB}/const/jb_data/$f_JBBAL stabal96.bal
+
+#--- fetching the guess
+cp ${WRK}/first_guess ./ICMSHMIN1INIT
+
+if [ ! -f ./ICMSHMIN1INIT ] ; then
+  echo "Sorry, no first-guess!!!"
+  exit 1
+fi
+
+ln -sf ICMSHMIN1INIT ICMSHMIN1IMIN
+ln -sf ICMSHMIN1INIT ICMRFMIN10000
+ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC000
+ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC
+
+
+#--- fetching consts
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+#--- fetching consts
+cp ${HM_LIB}/const/bias_corr/var.amv* .
+cp ${HM_LIB}/const/bias_corr/rszcoef_fmt	rszcoef_fmt
+cp ${HM_LIB}/const/bias_corr/cstlim_noaa.dat  cstlim_noaa.dat
+
+#--- RADIOSONDE BIAS CORRECTION
+for tabfile in table1 table2 table3;do
+  cp ${HM_LIB}/const/bias_corr/$tabfile .
+done
+
+if [ $LVARBC = "T" ]; then
+
+  [[ -s $WRK/VARBC.cycle ]] || \
+  { echo "You do not have VARBC table from an earlier run \
+    please check the content of your WORKDIR" ; exit 1 ; }
+   
+  ln -s $WRK/VARBC.cycle  ./VARBC.cycle
+
+fi
+
+# RTTOV
+ln -sf ${HM_SAT_CONST}/* .
+ln -sf ${HM_LIB}/nam/IASI_CLDDET.NL .
+ln -sf ./rtcoef_metop_2_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_2_iasi.dat
+ln -sf ./rtcoef_metop_1_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_1_iasi.dat
+
+is_coldstart=$( cat $WRK/is_coldstart )
+if [ $is_coldstart != "yes" -a "${INITCLOUDFRACTI-yes}" = yes -a $PHYSICS = "arome" ]; then
+   ICLOUDFRACTI="1"
+   LCLOUDFRACTI=".TRUE."
+else
+   ICLOUDFRACTI="-1"
+   LCLOUDFRACTI=".FALSE."
+fi
+
+
+	#--- check odb
+	CheckDir ${d_DB_MINIM}
+
+	#--- ODB settings for 3dvar
+	export ODB_CMA=CCMA
+	export ODB_SRCPATH_CCMA=${d_DB_MINIM}/CCMA
+	export ODB_DATAPATH_CCMA=${d_DB_MINIM}/CCMA
+	export IOASSIGN=${d_DB_MINIM}/CCMA/IOASSIGN
+
+    #--- ODB Debug
+    if [ $ODB_VERBOSE_OUT -eq 1 ];then
+         export ODB_TRACE_PROC=-1
+         export ODB_TRACE_FILE=${d_MINIM}/trace.%d
+         export ODB_TRACE_FLUSH_FREQ=1
+         export DR_HOOK=1
+    fi
+
+    LBGPERT=.FALSE.
+    NBGVECS=0
+    LPERTRELAX=.FALSE.
+    DELTA=0.
+
+    JUPTRA=$(( 0  ))
+    JLOBS=.TRUE
+    JLSKIPMIN=.FALSE.
+    JLCHRESINCR=.FALSE.
+    JLNHDYN=.FALSE.
+    LBBVARBC=.TRUE.
+    LTOVSCV=.FALSE.
+
+    #--- namelist
+    NAMELIST=$WRK/$WDIR/namelist
+    Get_namelist minimization $NAMELIST
+    sed -e "s/NBPROC/${NPROC}/g"   \
+	-e "s/NPROCX/${NPROCX}/g"  \
+	-e "s/NPROCY/${NPROCY}/g"  \
+        -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+        -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+        -e "s/NREDNMC/${REDNMC}/"  \
+        -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+        -e "s/LBVARBC/$LBBVARBC/"  \
+        -e "s/NBUPTRA/${JUPTRA}/g" \
+        -e "s/LBOBS/${JLOBS}/g" \
+        -e "s/LBSKIPMIN/${JLSKIPMIN}/g" \
+        -e "s/LBCHRESINCR/${JLCHRESINCR}/g" \
+        -e "s/LBNHDYN/${JLNHDYN}/g" \
+        -e "s/LTOVSCV=LTOVSCV/LTOVSCV=$LTOVSCV/g" \
+        -e "s/NCONF=NCONF/NCONF=131/g" \
+        -e "s/CNMEXP=CNMEXP/CNMEXP=\"MIN1\"/g" \
+        -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+        -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+        -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+        -e "s/LBGPERT=LBGPERT/LBGPERT=$LBGPERT/"  \
+        -e "s/NBGVECS=NBGVECS/NBGVECS=$NBGVECS/"  \
+        -e "s/DELTA=DELTA/DELTA=$DELTA/"  \
+        -e "s/LPERTRELAX=LPERTRELAX/LPERTRELAX=$LPERTRELAX/"  \
+        $NAMELIST > fort.4 || \
+        { echo "Sorry, no namelist!" ; exit 1 ; }
+
+    Cat_logs fort.4
+
+    $MPPEXEC $BINDIR/$MODEL || exit
+
+    Cat_logs NODE.001_01
+
+    [[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+	if [ ! -f MXMIN1999+0000 ]; then
+		echo "Aladin-3dvar didn't produce analysis file!"
+		exit 1
+	fi
+
+    if [ $LVARBC = "T" ]; then
+       #--- save VARBC tables
+       cp -f VARBC.cycle $ARCHIVE/.
+       if [ "$RUNNING_MODE" = "operational" ]; then
+	   HH=${DTG:8:2}
+	   latest=$ARCHIVE_ROOT/VARBC_latest
+	   [ ${ENSMBR--1} -ge 0 ] && latest=$latest/mbr$ENSMBR
+	   [ -d $latest ] || mkdir $latest
+	   cp -f VARBC.cycle $latest/VARBC.cycle.$HH
+       fi
+    fi
+
+    mv MXMIN1999+0000 $ARCHIVE
+
+    # Point fc_start to the analysis
+    ln -sf $ARCHIVE/MXMIN1999+0000 $WRK/fc_start
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

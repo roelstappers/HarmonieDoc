@@ -1,0 +1,65 @@
+#!/bin/bash
+#-----------------------------------------------------
+#   Run shuffle-merge on an ECMA ODB sub-base set.
+#   The result will be a new ECMA ODB virtual base. 
+#-----------------------------------------------------
+#   The input directory structure: 
+#     ${d_DB}/ECMA.${base1}/....
+#            /ECMA.${base2}/....
+#             ...
+#   and inside one ECMA.${base}: -|->ECMA.dd
+#                                 |->ECMA.sch
+#                                 |->ECMA.flags
+#                                 |->1
+#                                 ....
+#
+#   The virtual basis (with the associated files) : 
+#     ${d_DB}/ECMA->|->ECMA.dd
+#                   |->ECMA.sch
+#                   |->ECMA.poolmask
+#                   |->IOASSIGN
+#-----------------------------------------------------                 
+#   Globals: n_date, hh, left_margin, right_margin, 
+#            types_BASE, d_ASSIM , PROC_SHUF, 
+#            PROC_MERGE_IOASSIGN, NPROC, d_DB
+#------------------------------------------------------
+
+
+    . functions.ksh
+
+	echo "ODB dir: ${d_DB}"
+	typeset base
+	
+	#---  ODB settings for merge/shuffle
+	export ODB_CMA=ECMA
+	export ODB_SRCPATH_ECMA=${d_DB}/ECMA
+	export ODB_DATAPATH_ECMA=${d_DB}/ECMA
+	export ODB_ANALYSIS_DATE=${YMD}
+	export ODB_ANALYSIS_TIME=${HH}0000
+	export IOASSIGN=${d_DB}/ECMA/IOASSIGN
+	export ODB_ECMA_POOLMASK_FILE=${d_DB}/ECMA/ECMA.poolmask
+	#--- prepare db dir
+	RecreateDir ${d_DB}/ECMA 
+	#-- create merged ioassign file
+	cd ${d_DB}/ECMA
+	liste=""
+	for base in ${types_BASE}; do
+		liste=${liste}" -t "${base}
+	done
+        echo "liste is $liste"
+	$HM_LIB/scr/merge_ioassign -d ${d_DB} ${liste} || \
+	{ echo "MERGE_IOASSIGN failed" ; exit 1 ; }
+	unset liste
+	#-- get number of pools
+	na=`head -5 ${d_DB}/ECMA/ECMA.dd | tail -1`
+	nb=1
+	echo "Original: na=$na, nb=$nb"
+
+	#--- run merge
+        nbslot=7
+
+	$MPPEXEC $BINDIR/shuffle -iECMA -oECMA -a${na} \
+		-b${nb} -B${YMD}${HH} -L${SHUFFLE_LMARGIN} \
+		-R${SHUFFLE_RMARGIN} -T${nbslot} || exit
+	
+	unset ODB_ECMA_POOLMASK_FILE

@@ -1,0 +1,416 @@
+#!/bin/bash
+#-----------------------------------------------------------------------
+# Upper air analysis - 4DVAR (configuration 131 of ALADIN model)
+#-----------------------------------------------------------------------
+# Inputs:
+#
+#   #-first guess:  
+#     ICMSHMINIINIT ICMSHMINIIMIN ICMRFMINI0000   
+#
+#   #-Lateral boundary conditions
+#     ELSCFMINIALBC000 ELSCFMINIALBC001 ELSCFMINIALBC002 
+#
+#   #--Input/output (CCMA) ODB directory structure, containing only 
+#      the active observations:
+#     ${d_DB}/CCMA
+#            /CCMA.${base1}
+#            ....
+#
+#   #--Constants and statistics   
+#     (1)rszcoef_fmt (2)rt_coef_atovs_newpred_ieee.dat , etc.
+#     (3)stabal96.cv (4)stabal96.bal
+#
+# Outputs:
+#   #--Upper air low res analysis MXMINI999+0000
+#   #--The minimization (update) information will be put into the 
+#      input (CCMA) ODB.
+#-----------------------------------------------------------
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+d_MINIM=$WRK/$WDIR
+
+loop=${1?"Loop number not given as input"}
+res=$( echo $ILRES | cut -d, -f$loop )
+export TSTEP_4D=$( echo $TSTEP4D | cut -d, -f$loop )
+
+#-- Get Environmental variables
+. include.ass
+
+#--- Get Local vars
+typeset d_DB namel
+d_DB_MINIM=$WRK/odb_ccma
+
+#-- enter the working dir
+cd ${d_MINIM}
+
+#--- background error stat
+ln -sf ${HM_LIB}/const/jb_data/$f_JBCV  stabal96.cv
+ln -sf ${HM_LIB}/const/jb_data/$f_JBBAL stabal96.bal
+
+#--- fetching consts
+ln -sf ${HM_LIB}/const/rrtm_const/* .
+cp -fp ${HM_LIB}/const/bias_corr/* .
+
+#--- RTTOV coeffs
+ln -s ${HM_SAT_CONST}/* .
+ln -sf ./rtcoef_metop_2_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_2_iasi.dat
+
+#--- RADIOSONDE BIAS CORRECTION
+for tabfile in table1 table2 table3; do
+  cp -fp ${HM_LIB}/const/bias_corr/$tabfile .
+done
+
+#--- VARBC files
+if [ $LVARBC = "T" ]; then
+
+  [[ -s $WRK/VARBC.cycle ]] || \
+  { echo "You don t have VARBC table from the earlier run \
+    please check the content of your WORKDIR " ; exit 1 ; }
+    cp $WRK/VARBC.cycle  ./VARBC.cycle
+
+fi
+
+#--- check odb
+CheckDir ${d_DB_MINIM}
+
+#--- ODB settings for 3dvar
+export ODB_CMA=CCMA
+export ODB_SRCPATH_CCMA=${d_DB_MINIM}/CCMA
+export ODB_DATAPATH_CCMA=${d_DB_MINIM}/CCMA
+export IOASSIGN=${d_DB_MINIM}/CCMA/IOASSIGN
+
+#--- ODB Debug
+if [ $ODB_VERBOSE_OUT -eq 1 ]; then
+   export ODB_TRACE_PROC=-1
+   export ODB_TRACE_FILE=${d_MINIM}/trace.%d
+   export ODB_TRACE_FLUSH_FREQ=1
+   export DR_HOOK=1
+fi
+
+export TO_ODB_ECMWF=0
+export ODB_CMA=CCMA
+export TO_ODB_SWAPOUT=0
+export ODB_DEBUG=0
+export ODB_CTX_DEBUG=0
+export ODB_REPRODUCIBLE_SEQNO=2
+export ODB_STATIC_LINKING=1
+export ODB_ANALYSIS_DATE=${YMD}
+export ODB_ANALYSIS_TIME=${HH}0000
+export ODB_IO_METHOD=1
+export ODB_ECMA_CREATE_POOLMASK=1
+export ODB_CCMA_CREATE_POOLMASK=1
+export ODB_CCMA_CREATE_DIRECT=1
+
+IUPTRA=$(( $loop - 1 ))
+
+# Forecast settings shared between Forecast and 4DV[screen|minim|traj]
+. forecast_model_settings.sh
+
+# Generating the NHISTS=WRITELIST and NSHISTS=WRITESLIST arrays needed 
+# in namelists
+
+NRAZTSLIST=$( perl -S Output_freq.pl NRAZTS )
+WRITELIST=0
+WRITESLIST=0
+NFPOS=0
+NPOSTS=0
+N1SFXHIS=0
+
+# Input data for MSG cloud initialization                                     
+export LMSGINIT=.FALSE. 
+if [ "$USE_MSG" = yes ] ; then
+  MSGFILE=$MSG_PATH/MSGcloud$DTG
+  if [ -e $MSGFILE ] ; then
+   export LMSGINIT=.TRUE.
+   ln -sf $MSGFILE ICMSHHARMANIN
+  else
+   export LMSGINIT=.FALSE.
+  fi
+fi
+
+if [ "$SURFACE" == surfex ] ; then
+
+  # Surfex output format
+  if [ "$SURFEX_OUTPUT_FORMAT" == lfi ] ; then
+    LFMWRIT=.TRUE.
+    LFMREAD=.TRUE.
+    LFAPGD=.FALSE.
+  else
+    LFMWRIT=.FALSE.
+    LFMREAD=.FALSE.
+    LFAPGD=.TRUE.
+  fi
+fi
+
+LBGPERT=.FALSE.
+LPERTRELAX=.FALSE.
+DELTA=1.
+NBGVECS=0
+
+
+LOBS=.TRUE.
+LSKIPMIN=.FALSE.
+LCHRESINCR=.FALSE.
+LNHDYN=.FALSE.
+LBBVARBC=.FALSE.
+
+
+NAMELIST=$WRK/$WDIR/namelist_minim4d
+Get_namelist minim4d $NAMELIST
+
+#--- prepare namelist
+sed \
+    -e "s/NCONF=NCONF/NCONF=131/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"MINI\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h2\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP_4D/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    -e "s/WRITESLIST/$WRITESLIST/" \
+    -e "s/NBPROC/${NPROC}/g"   \
+    -e "s/NPROCX/${NPROCX}/g"  \
+    -e "s/NPROCY/${NPROCY}/g"  \
+    -e "s/NREDNMC/${REDNMC}/"  \
+    -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+    -e "s/LBVARBC/$LBBVARBC/" \
+    -e "s/NBUPTRA/${IUPTRA}/g" \
+    -e "s/LBOBS/${LOBS}/g" \
+    -e "s/LBSKIPMIN/${LSKIPMIN}/g" \
+    -e "s/LBCHRESINCR/${LCHRESINCR}/g" \
+    -e "s/LBNHDYN/${LNHDYN}/g" \
+    -e "s/LLINC/$LLINC/" \
+    -e "s/ZNRADFR/$ZNRADFR/g" \
+    -e "s/ZNEN1/$ZNEN1/g" \
+    -e "s/ZNEN2/$ZNEN2/g" \
+    -e "s/ZNEK0/$ZNEK0/g" \
+    -e "s/ZNEK1/$ZNEK1/g" \
+    -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+    -e "s/NPOSTS=NPOSTS/NPOSTS=$NPOSTS/g" \
+    -e "s/NFPOS=NFPOS/NFPOS=$NFPOS/g" \
+    -e "s/NRAZTSLIST/$NRAZTSLIST/g" \
+    -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=1000/g" \
+    -e "s/=LFMWRIT/=$LFMWRIT/g" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    -e "s/ICLOUDFRACTI/0/g" \
+    -e "s/LCLOUDFRACTI/.FALSE./g" \
+    -e "s/ITKE/-1/g" \
+    -e "s/LSPBDC=.FALSE./LSPBDC=${lspbdc}/g" \
+    -e "s/LMSGINIT=.FALSE./LMSGINIT=${LMSGINIT}/g" \
+    -e "s/LPERTURB=LPERTURB/LPERTURB=$LPERTURB/g" \
+    -e "s/NAEMEMBER=NAEMEMBER/NAEMEMBER=$ENSMBR/g" \
+    -e "s/LBGPERT=LBGPERT/LBGPERT=${LBGPERT}/g" \
+    -e "s/DELTA=DELTA/DELTA=${DELTA}/g" \
+    -e "s/LPERTRELAX=LPERTRELAX/LPERTRELAX=${LPERTRELAX}/g" \
+    -e "s/NBGVECS=NBGVECS/NBGVECS=${NBGVECS}/g" \
+    -e "s/LCOMADH=.TRUE./LCOMADH=.FALSE./g" \
+    -e "s/LCOMADV=.TRUE./LCOMADV=.FALSE./g" \
+    -e "s/LCOMAD_W=.TRUE./LCOMAD_W=.FALSE./g" \
+    -e "s/LCOMAD_T=.TRUE./LCOMAD_T=.FALSE./g" \
+    -e "s/LCOMAD_SPD=.TRUE./LCOMAD_SPD=.FALSE./g" \
+    -e "s/LCOMAD_SVD=.TRUE./LCOMAD_SVD=.FALSE./g" \
+    -e "s/LCOMAD_SP=.TRUE./LCOMAD_SP=.FALSE./g" \
+    -e "s/LCOMAD_GFL=.TRUE./LCOMAD_GFL=.FALSE./g" \
+    -e "s/YQ_NL%LCOMAD=.TRUE./YQ_NL%LCOMAD=.FALSE./g" \
+    $NAMELIST > fort.4 || \
+    { echo "Sorry, no namelist!" ; exit 1 ; }
+
+# Get first guess and lateral boundaries
+
+LLL=$( perl -e "printf('%4.4i', $FCINT -1)" )
+cp $WRK/ELSCF${CNMEXP}_${res}x+$LLL ICMRFMINI0000
+
+if [ $loop -gt 1 ]; then
+  cp ../MXMINI999_${res}x+0000 ICMSHMINIINIT
+  cp ../MXMINI999_${res}x+0000 ICMSHMINIIMIN
+  cp ../MXMINI999_${res}x+0000 ELSCFMINIALBC000
+else
+cp $WRK/ELSCF${CNMEXP}_${res}x+$LLL ICMSHMINIINIT
+cp $WRK/ELSCF${CNMEXP}_${res}x+$LLL ICMSHMINIIMIN
+cp $WRK/ELSCF${CNMEXP}_${res}x+$LLL ELSCFMINIALBC000
+fi
+
+cp ICMRFMINI0000 $ARCHIVE/bg_lowres_$loop
+
+II=1
+FF=0
+while [ $FF -le 1 ] ; do
+   FFF=`perl -e "printf('%3.3i', '$FF')"`
+   III=`perl -e "printf('%3.3i', '$II')"`
+   FILE=$( grep "${FFF}|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+   ln -sf ${FILE}_${res}x ELSCFMINIALBC$III
+   FF=$( expr $FF + 1 )
+   II=$( expr $II + 1 )
+done
+
+#
+# Setup SURFEX files if applicable
+#
+
+LPERTSURF=.FALSE.
+if [ "$SURFACE" = surfex ] ; then
+
+  
+  # Copy namelist
+  
+  NAMELIST=$WRK/$WDIR/EXSEG1.nam
+  Get_namelist sfx_forecast $NAMELIST
+
+   sed -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$LPERTSURF/" \
+       -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$LPERTSURF/" \
+  $NAMELIST > EXSEG1.nam || \
+    { echo "Sorry, no namelist!" ; exit 1 ; }
+
+
+  # Copy the surfex file
+  if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+    LLL3=$( perl -e "printf('%3.3i', $LLL)" )
+    ln -sf $WRK/AROMOUT_${res}x.${LLL3}.lfi TEST.lfi
+    ln -sf ${CLIMDIR}_2x/PGD.lfi   .
+  else
+    ln -sf ${CLIMDIR}_2x/Const.Clim.sfx  Const.Clim.sfx
+    ln -sf $WRK/ELSCF${CNMEXP}_${res}x+${LLL}.sfx ICMSHMINIINIT.sfx
+  fi
+
+  ln -sf $CLIMDIR/*.bin .
+
+fi
+
+
+if [ $loop -gt 1 ]; then
+   CLUPTRA=$(( $loop - 2 ))
+   cp ../traj0${CLUPTRA}+0000000 .
+fi
+
+Cat_logs fort.4 EXSEG1.nam
+
+$MPPEXEC $BINDIR/$MODEL || exit 
+
+Cat_logs NODE.001_01
+
+[[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+if [ ! -f MXMINI999+0000 ]; then
+   echo "Aladin-4dvar didn't produce analysis file!"
+   exit 1
+fi 
+
+if [ $LVARBC = "T" ]; then
+  #--- save VARBC tables
+  cp -f VARBC.cycle $ARCHIVE/.
+fi
+
+cp MXMINI999+0000 ../MXMINI999_${res}x+0000
+cp MXMINI999+0000 $ARCHIVE/an_lowres_$loop
+cp traj0${IUPTRA}+0000000 ../.
+
+rm MXMINI999+0000
+if [ "$CH_RES_SPEC" = yes ] ; then
+
+############################################################################
+# Change resolution of control vector, convert to increment
+# and add to background
+
+  rm -f fort.4
+
+
+#--- fetching the guess (background)
+  cp ${WRK}/first_guess ./ICMSHMIN1INIT
+
+  if [ ! -f ./ICMSHMIN1INIT ] ; then
+    echo "Sorry, no first-guess!!!"
+    exit 1
+  fi
+
+  ln -sf ICMSHMIN1INIT ICMSHMIN1IMIN
+  ln -sf ICMSHMIN1INIT ICMRFMIN10000
+  ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC000
+  ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC
+
+  if [ "$DTG" != $DTGBEG -a "${INITCLOUDFRACTI-yes}" = yes -a $PHYSICS = "arome" ]; then
+     ICLOUDFRACTI="1"
+     LCLOUDFRACTI=".TRUE."
+  else
+     ICLOUDFRACTI="-1"
+     LCLOUDFRACTI=".FALSE."
+  fi
+  
+  JUPTRA=$(( $loop  )) 
+
+
+  JLOBS=.FALSE.
+  JLSKIPMIN=.TRUE.
+  JLCHRESINCR=.TRUE.
+  JLNHDYN=.FALSE.
+  LBBVARBC=.FALSE.
+  LTOVSCV=.FALSE.
+
+#--- namelist
+        NAMELIST=$WRK/$WDIR/namelist
+        Get_namelist minimization $NAMELIST
+    sed -e "s/NBPROC/${NPROC}/g"  \
+        -e "s/NPROCX/${NPROCX}/g"  \
+        -e "s/NPROCY/${NPROCY}/g"  \
+            -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+            -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+            -e "s/NREDNMC/${REDNMC}/"  \
+            -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+            -e "s/LBVARBC/${LBBVARBC}/g" \
+            -e "s/NBUPTRA/${JUPTRA}/g" \
+            -e "s/LBOBS/${JLOBS}/g" \
+            -e "s/LBSKIPMIN/${JLSKIPMIN}/g" \
+            -e "s/LBCHRESINCR/${JLCHRESINCR}/g" \
+            -e "s/LBNHDYN/${JLNHDYN}/g" \
+            -e "s/LBGPERT=LBGPERT/LBGPERT=$LBGPERT/g" \
+            -e "s/DELTA=DELTA/DELTA=$DELTA/g" \
+            -e "s/NBGVECS=NBGVECS/NBGVECS=$NBGVECS/g" \
+            -e "s/LPERTRELAX=LPERTRELAX/LPERTRELAX=$LPERTRELAX/g" \
+            -e "s/LTOVSCV=LTOVSCV/LTOVSCV=$LTOVSCV/g" \
+            -e "s/NCONF=NCONF/NCONF=131/g" \
+            -e "s/CNMEXP=CNMEXP/CNMEXP=\"MIN1\"/g" \
+            -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+            -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+            -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+            $NAMELIST > fort.4 || \
+            { echo "Sorry, no namelist!" ; exit 1 ; }
+
+  Cat_logs fort.4
+
+  $MPPEXEC $BINDIR/$MODEL -c131 -maladin -vmeteo -eMIN1 -t001 \
+                            -ft0 -asli -procs ${NPROC} || exit
+
+  Cat_logs NODE.001_01
+ 
+   [[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+
+ls -lrt
+
+  if [ ! -f MXMIN1000-0999 ]; then
+        echo "No high resolution analysis was obtained!"
+        exit 1
+  fi
+
+  cp MXMIN1000-0999 $WRK/an_hr_begwin
+  cp MXMIN1000-0999 $ARCHIVE/an_hr_begwin
+
+
+fi
+
+
+
+
+# Normal exit
+cd $WRK
+rm -fr $WDIR
+trap - 0
+exit

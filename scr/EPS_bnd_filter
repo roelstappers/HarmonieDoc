@@ -1,0 +1,30 @@
+## Split SochiEPS boundary files
+
+if ( (paramId == 129 && typeOfLevel is "hybrid"  && level == 1  ) # typeOfLevel 109, fis (z*9.80665, m)
+   ) {
+      print "param_[date]_[time].grib[editionNumber] added leveltype=[typeOfLevel:l] [typeOfLevel:s] level=[level] date=[date]_[time]+[stepRange]h par=[paramId:l] [paramId:s] [numberOfValues]";
+      write "topo";
+    }
+else {
+  if ( shortName is "10fg" || typeOfLevel is "isobaricInhPa" ) {
+## skip
+     print "skipping leveltype=[typeOfLevel:l] [typeOfLevel:s] level=[level] date=[date]_[time]+[stepRange]h par=[paramId:l] [paramId:s] [numberOfValues]";
+     write "extras";
+  }
+  else {
+## keep
+   if ( stepRange < 10 ) {
+      if ( hour < 10 ) {
+         write "fc[date]_0[hour]+00[stepRange]";
+      } else {
+         write "fc[date]_[hour]+00[stepRange]";
+      }
+   } else {
+      if ( hour < 10 ) {
+         write "fc[date]_0[hour]+0[stepRange]";
+      } else {
+         write "fc[date]_[hour]+0[stepRange]";
+      }
+   }
+  }
+}

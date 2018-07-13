@@ -1,0 +1,225 @@
+#!/bin/bash
+
+# 
+# Depending on environment variable OBSEXTR
+#
+
+# OBSEXTR=bufr
+# Extract data in ASCII format for verification from a BUFR file
+# If BUFR file not available it will be extracted from MARS if 
+# we are at ECMWF
+#
+# OBSEXTR=vobs
+# Copy vobsYYYYMMDD.tar.gz from a local directory defined by VOBSDIR
+#
+#
+
+. header.sh
+
+# We need to set the timewindow from observations
+if [ $ANAATMO = 3DVAR ] || [ $ANAATMO = 4DVAR ] || [ $ANASURF != none ] ; then
+   . include.ass
+else
+ SHUFFLE_LMARGIN=-180
+ SHUFFLE_RMARGIN=180
+fi
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+if [ $OBSEXTR == bufr ] ; then
+
+# Check bufrtables
+Link_bufrtables
+
+# Get station list
+ln -fs $HM_LIB/util/gl_grib_api/scr/allsynop.list synop.list
+ln -fs $HM_LIB/util/gl_grib_api/scr/alltemp.list  temp.list
+
+# Check the already extracted data for this period
+
+CDTG=`echo $DTG | awk '{print substr($1,1,8)}'`00
+if [ "$TFLAG" == "min" ]; then
+  if [ "$TSTEP" -gt "0" ]; then
+    ZLL=$(( $LL * 3600 / $TSTEP ))
+  else
+    echo "TSTEP must be greater than 0: $TSTEP"
+    exit
+  fi
+else
+  ZLL=$LL
+fi
+
+LDTG=`mandtg $DTG + $LL`  # SDTG of last observation
+
+while [ $CDTG -le $LDTG ]
+do
+   DATE=`mandtg -date $CDTG`
+   [[ "$EXT_VOBS" != "" ]] && $EXT_ACCESS $EXT_VOBS/vobs$DATE.tar.gz $EXTRARCH/vobs$DATE.tar.gz
+   [[ -s $EXTRARCH/vobs$DATE.tar.gz ]] && \
+   tar -zxvf $EXTRARCH/vobs$DATE.tar.gz
+   CDTG=`mandtg $CDTG + 24`
+done
+
+# Loop over all verification times 
+
+CDTG=${DTG}
+ODTG=${DTG}
+
+VERILIST=$( perl -S Output_freq.pl VERILIST )
+for FF in $VERILIST; do
+  if [ "$FF" -le "$ZLL"  ]; then
+    # Need to convert time steps to hours
+    if [ "$TFLAG" == "min" ]; then
+      if [ "$TSTEP" -gt "0" ]; then
+        ZFF=$(( $FF * $TSTEP / 3600))
+      else
+        echo "TSTEP must be greater than 0: $TSTEP"
+        exit
+      fi
+    else
+      # FF is already in hours
+      ZFF=$FF
+    fi
+
+    CDTG=`mandtg $DTG + ${ZFF}`
+       
+    # Check if we need to update observation time
+    set +e
+    let " TIMEWINDOW = $SHUFFLE_RMARGIN / 60 "
+    MINUTE=$(expr $SHUFFLE_RMARGIN % 60 )
+    set -e
+    [[ $MINUTE -ne 0 ]] && TIMEWINDOW=$( expr $TIMEWINDOW + 1 )
+    RIGHT_DTG=`mandtg $ODTG + $TIMEWINDOW`
+    if mandtg $RIGHT_DTG -le $CDTG ; then
+       OSTEP=$( expr $SHUFFLE_RMARGIN - $SHUFFLE_LMARGIN )
+       OSTEP=$( expr $OSTEP / 60 )
+       ODTG=`mandtg $ODTG + $OSTEP`
+    fi
+
+    # Only create the vobs file if it is not available
+    if [ ! -s vobs${CDTG} ] ; then
+
+     LOBDIR=$( Parse_dates.pl $OBDIR $ODTG )
+     [[ -s $LOBDIR ]] || $MKDIR $LOBDIR
+   
+     if [ ! -s $LOBDIR/obver$ODTG ] && [ "$COMPCENTRE" = ECMWF ] ; then
+
+        #--- Get the domain ---#
+        export SOUTHEC WESTEC NORTHEC EASTEC
+
+        $BINDIR/domain_prop_grib_api $CLIMDIR/m$MM -f -MAX_EXT > foo$$
+
+         EASTEC=$( tail -1 foo$$ | head -1 | sed 's/ //g' )
+        NORTHEC=$( tail -2 foo$$ | head -1 | sed 's/ //g' )
+         WESTEC=$( tail -3 foo$$ | head -1 | sed 's/ //g' )
+        SOUTHEC=$( tail -4 foo$$ | head -1 | sed 's/ //g' )
+
+        rm -f foo$$
+
+        let " TIMEWINDOW = $SHUFFLE_LMARGIN / 60 "
+        set +e
+        MINUTE=$(expr $SHUFFLE_LMARGIN % 60 )
+        MINUTE=$(expr 0 - $MINUTE )
+        MINUTE=`perl -e "printf('%2.2i', '$MINUTE')"` 
+        set -e
+        [[ $MINUTE -ne 0 ]] && TIMEWINDOW=$( expr $TIMEWINDOW - 1 )
+
+        SDTG=`mandtg $ODTG + $TIMEWINDOW`
+        DATE=`mandtg -date $SDTG`
+        TIME=`mandtg -hour $SDTG`$MINUTE
+        RANGE=$( expr $SHUFFLE_RMARGIN - $SHUFFLE_LMARGIN )
+        RANGE=$( expr $RANGE - 1 )
+    
+        GEOL="$NORTHEC/$WESTEC/$SOUTHEC/$EASTEC"
+        OBSLIST="LSD/T/TS/TD/TM"
+
+        # Create request and call MARS
+        [[ -s ./retrin ]] && rm -f retrin
+        WriteMARSreq -d $DATE -t $TIME -r $RANGE -o $OBSLIST -m ./retrin -z $LOBDIR/obver$ODTG -g $GEOL || exit
+        mars retrin || { echo "MARS failed" ; exit 1 ; }
+
+     fi
+
+     if [ -s $LOBDIR/obver$ODTG ] ; then
+        ln -sf $LOBDIR/obver$ODTG ob$CDTG
+     else 
+         if [ -s $LOBDIR/ob$ODTG ] && [ "$COMPCENTRE" != ECMWF ]; then
+            ln -sf $LOBDIR/ob$ODTG ob$CDTG
+         fi
+     fi
+
+     if [ -s ob$CDTG ]; then
+ 
+        YY=`mandtg -year $CDTG`
+        MM=`mandtg -month $CDTG`
+        DD=`mandtg -day $CDTG`
+        HH=`mandtg -hour $CDTG`
+
+cat << EOF > oextr.dat
+&oextr
+   year    =$YY,
+   month   =$MM
+   day     =$DD
+   hour    =$HH,
+   luse_list = T,
+   nlev_t = 10,
+   PRES_T  =   925.,850.,700.,500.,400.,300.,200.,150.,100.,50.,
+/
+EOF
+#
+
+        $MPPGL $BINDIR/obsextr < oextr.dat || exit
+
+     else
+        echo "Could not find observation file $LOBDIR/obver$ODTG for verification date obver$CDTG"
+     fi
+   fi
+  fi
+done 
+
+# Finally pack all extracted data togheter
+# with possible old data
+
+CDTG=`echo $DTG | awk '{print substr($1,1,8)}'`00
+LAST_FOUND_DTG=$( ls -1 vobs?????????? | tail -1 | cut -c5-14 )
+while [ $CDTG -le $LAST_FOUND_DTG ]
+do
+   DATE=`mandtg -date $CDTG`
+   tar -zcvf vobs${DATE}.tar.gz vobs${DATE}??
+   mv vobs${DATE}.tar.gz $EXTRARCH/.
+   rm -f vobs${DATE}*
+   CDTG=`mandtg $CDTG + 24`
+done
+
+elif [ $OBSEXTR == vobs ] ; then
+
+   CDTG=`echo $DTG | awk '{print substr($1,1,8)}'`00
+   LDTG=`mandtg $DTG + $LL`  # SDTG of last observation
+
+   while [ $CDTG -le $LDTG ]
+   do
+      DATE=`mandtg -date $CDTG`
+      [[ -s $EXTRARCH/vobs${DATE}.tar.gz ]] || cp $VOBSDIR/vobs${DATE}.tar.gz $EXTRARCH
+      CDTG=`mandtg $CDTG + 24`
+   done
+
+elif [ $OBSEXTR == none ] ; then
+
+ echo "No vobs data extracted"
+
+else
+
+ echo "Unknown option in FetchOBS $OBSEXTR"
+ exit 1
+
+fi
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

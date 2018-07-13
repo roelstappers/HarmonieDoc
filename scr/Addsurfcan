@@ -1,0 +1,160 @@
+#!/bin/sh
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#
+# Addsurf 
+#
+
+MM=$( mandtg -month $DTG )
+BD_ADD=`echo $SMSPARENT | cut -c1-3`
+BD_NR=`echo $SMSPARENT | perl -ne 'print $1 if (/(\d+)$/);'`
+
+if [ "$BD_ADD" == "LBC" ]; then
+  if [ $BD_NR -le $LL ] ; then
+    cp $WRK/bdinput_${BD_NR} fort.11
+    # Climatological file
+    ln -s $BDCLIM/m$MM fort.12
+  else
+    # Normal exit
+    echo "BD_NR is greater than LL"
+    trap - 0
+    exit 0
+  fi
+elif [ "$SMSPARENT" == "Assim_SURFEX" ]; then
+  cp $WRK/first_guess fort.11
+  cp $WRK/FG_ADDSURF fort.12
+elif [ "$SMSPARENT" == "Boundaries" ]; then
+  INFILE=$( grep "000|" $WRK/bdstrategy | awk '{print substr($3,1)}' )
+  cp $INFILE fort.11
+  # Climatological file
+  ln -s $BDCLIM/m$MM fort.12
+else
+  if [ "$ANAATMO" == "blending" ]; then
+    cp $WRK/blend_first_guess fort.11
+  else
+    # Add climatological fields to the first guess to make CANARI happy
+    # Input/output file
+#    cp $WRK/first_guess fort.11
+    cp $WRK/ICMSHTRAJ+0001 fort.11
+  fi
+
+  # Climatological file
+  ln -s $CLIMDIR/m$MM fort.12
+fi
+
+BD_ADD=`echo $SMSPARENT | cut -c1-3`
+# Default settings, should be customized
+if [ "$BD_ADD" == "LBC" -o "$SMSPARENT" == "Assim_SURFEX" ]; then
+  cdprefm_def='SURF'
+  lopc_def=".TRUE."
+  cdsufm[1]='AEROS.SEA'
+  cdsufm[2]='AEROS.LAND'
+  cdsufm[3]='AEROS.SOOT'
+  cdsufm[4]='AEROS.DESERT'
+else
+cdprefm_def='SURF'
+lopc_def=".TRUE."
+cdsufm[1]='ALBEDO NEIGE'
+cdsufm[2]='DENSIT.NEIGE'
+cdsufm[3]='RESERV.INTER'
+cdsufm[4]='Z0.FOIS.G'
+cdsufm[5]='ALBEDO'
+cdsufm[6]='EMISSIVITE'
+cdsufm[7]='ALBEDO.SOLNU'
+cdsufm[8]='ALBEDO.VEG'
+cdsufm[9]='IND.VEG.DOMI'
+cdsufm[10]='RESI.STO.MIN'
+cdsufm[11]='IND.FOLIAIRE'
+cdsufm[12]='RES.EVAPOTRA'
+cdsufm[13]='GZ0.THERM'
+cdprefm[14]='PROF'
+cdsufm[14]='TEMPERATURE'
+cdprefm[15]='PROF'
+cdsufm[15]='RESERV.EAU'
+cdprefm[16]='PROF'
+cdsufm[16]='RESERV.GLACE'
+  cdsufm[17]='DENSIT.NEIGESNOWG'
+  cdsufm[18]='ALBEDO.NEIGESNOWG'
+  cdsufm[19]='RESERV.EAU'
+  cdsufm[20]='RESERV.INTER'
+  cdsufm[21]='RESERV.GLACE'
+  cdsufm[22]='ALBEDO'
+  cdsufm[23]='EMISSIVITE'
+  cdsufm[24]='ET.GEOPOTENT'
+  cdsufm[25]='PROP.VEGETAT'
+  cdsufm[26]='VAR.GEOP.ANI'
+  cdsufm[27]='VAR.GEOP.DIR'
+  cdsufm[28]='PROP.ARGILE'
+  cdsufm[29]='PROP.SABLE'
+  cdsufm[30]='EPAIS.SOL'
+fi
+
+# Number of fields is the size of cdfsum
+nbc=${#cdsufm[@]}
+cat > fort.4 <<EOF
+&NAML
+  NBC=${nbc},
+EOF
+var=1
+while [ "$var" -le "$nbc" ]; do
+  # Check if we use default value or not of cdprefm
+  if [ "${cdprefm[$var]}" != "" ]; then
+    echo "  CDPREFM(${var})='${cdprefm[$var]}'," >> fort.4
+  else
+    echo "  CDPREFM(${var})='${cdprefm_def}'," >> fort.4
+  fi
+  # cdsufm is always unique
+  echo "  CDSUFM(${var})='${cdsufm[$var]}'," >> fort.4
+  # Check if we use default value or not of lopc
+  if [ "${lopc[$var]}" != "" ]; then
+    echo "  LOPC(${var})=${lopc[$var]},"  >> fort.4
+  else
+    echo "  LOPC(${var})=${lopc_def},"  >> fort.4
+  fi
+  var=$(( $var + 1 ))
+done
+# Close namelist block
+cat >> fort.4 <<EOF
+/
+EOF
+
+cat fort.4 
+
+# Addsurf is a non-mpi program
+export DR_HOOK_NOT_MPI=1
+$MPPEXEC $BINDIR/ADDSURF || exit 
+
+if [ "$BD_ADD" == "LBC" ]; then
+  mv fort.11 $WRK/ADDSURF_bdinput${BD_NR}
+  ln -sf $WRK/ADDSURF_bdinput${BD_NR} $WRK/bdinput_${BD_NR}
+elif [ "$SMSPARENT" == "Assim_SURFEX" ]; then
+
+  mv fort.11 $WRK/AN_ADDSURF
+
+  # Update the first guess
+  ln -sf $WRK/AN_ADDSURF $WRK/first_guess
+  ln -sf $WRK/AN_ADDSURF $WRK/fc_start
+
+elif [ "$SMSPARENT" == "Boundaries" ]; then
+  mv fort.11 $WRK/INPUT_PREP_INI_SURFEX
+else
+
+#  mv fort.11 $WRK/FG_ADDSURF
+mv fort.11 $WRK/TRAJUPD
+  # Update the first guess
+  ln -sf $WRK/TRAJUPD $WRK/first_guess
+  ln -sf $WRK/TRAJUPD $WRK/fc_start
+fi
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+
+exit 0

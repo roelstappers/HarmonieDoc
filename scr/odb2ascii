@@ -1,0 +1,66 @@
+#!/bin/bash
+#-----------------------------------------------------
+#   Extract obs statistics from ODB
+#-----------------------------------------------------
+
+. header.sh
+
+
+ cd $WRK
+
+ # Untar the ODB unless they already exists
+ [[ -s $WRK/odbvar ]] || { tar xvf $ARCHIVE/odbvar.tar ; }
+ [[ -s $WRK/odb_ccma ]] || { tar xvf $ARCHIVE/odb_ccma.tar ; }
+
+ # Set mandalay environment variables
+ export SUBVERSION=0
+ export VERSION=1 
+ export DEGRE=0
+
+ bases="conv amsu iasi ascat"
+ for base in $bases; do 
+
+   [ -f $EXTRARCH/ecma_${base}_$DTG ] && rm $EXTRARCH/ecma_${base}_$DTG
+   #  Extraction of the extended ODB (ECMA)
+   if [ -d $WRK/odbvar/ECMA.$base ]; then
+     cd $WRK/odbvar/ECMA.$base
+     export ODB_CMA=ECMA
+     ${MPPEXEC} ${BINDIR}/MANDALAY || exit 1
+     # Find out if something was extracted and save only extracted data
+     extracted=1
+     grep -v : fic_odb.lst > /dev/null 2>&1 || extracted=0
+     if [ "$extracted" -eq "1" ]; then  
+       grep -v : fic_odb.lst >> $EXTRARCH/ecma_${base}_$DTG
+       # Pack data
+       gzip -f $EXTRARCH/ecma_${base}_$DTG
+     else
+       echo "No data was extracted for base: $base" 
+     fi
+   else
+     echo "No ODB exist for base $base"
+   fi
+ done
+
+ #  Extraction of the compressed OBD after screening (CCMA) 
+ [ -f $EXTRARCH/ccma_$DTG ] && rm $EXTRARCH/ccma_$DTG
+ if [ -d $WRK/odb_ccma/CCMA ]; then
+   cd $WRK/odb_ccma/CCMA
+   export ODB_CMA=CCMA
+   ${MPPEXEC} ${BINDIR}/MANDALAY || exit 1
+   # Find out if something was extracted and save only extracted data
+   extracted=1
+   grep -v : fic_odb.lst > /dev/null 2>&1 || extracted=0
+   if [ "$extracted" -eq "1" ]; then
+     grep -v : fic_odb.lst > $EXTRARCH/ccma_$DTG
+     # Pack data
+     gzip -f $EXTRARCH/ccma_$DTG
+   else
+     echo "No data was extracted from CCMA"
+   fi
+ else
+   echo "No ODB exist for CCMA"
+ fi
+ 
+ # Normal exit
+ trap - 0
+ exit

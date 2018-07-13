@@ -1,0 +1,36 @@
+#!/bin/bash
+
+#
+# Build utilities
+#
+
+
+. header.sh
+
+cd $HM_LIB/util/sqlite3 || exit
+
+[ -d $BINDIR ] || mkdir $BINDIR
+
+BUILD_SQLITE3=$( grep BUILD_SQLITE3 $HM_LIB/util/makeup/config.$HARMONIE_CONFIG | cut -d "=" -f2 | sed "s/ //g" )
+
+if [ $BUILD_SQLITE3 == "no" ]  ; then
+   BINSQLITE3=$( grep BINSQLITE3 $HM_LIB/util/makeup/config.$HARMONIE_CONFIG | cut -d "=" -f2 | sed "s/ //g" )
+   [[ $BINSQLITE3 == "" ]] && { echo "BINSQLITE3 not set, abort " ; exit 1 ; }
+   cp $BINSQLITE3 $BINDIR/. || exit 
+else
+  # Make sqlite3
+  cd $HM_LIB/util/sqlite3/src/sqlite-autoconf-3080002/ || exit
+  ./configure --prefix=$HM_LIB/util/sqlite3/sqlite-autoconf-3080002/ $SQLITE3_CONF_ARG
+  $MAKE || exit
+  $MAKE install || exit
+ 
+ # Copy sqlite3 to BINDIR
+  cp $HM_LIB/util/sqlite3/sqlite-autoconf-3080002/bin/sqlite3 $BINDIR
+fi
+
+# Make flibs (fortran interface to sqlite3)
+cd $HM_LIB/util/sqlite3/flibs || exit
+$MAKE ARCH=$HARMONIE_CONFIG || exit 1
+
+trap - 0
+exit

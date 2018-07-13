@@ -1,0 +1,232 @@
+#!/bin/bash
+# $Id: Start 5240 2007-08-02 14:18:55Z xiaohua $
+
+#|===================================================================|#
+#|                                                                   |#
+#| script:                                                           |#
+#|          Start                                                    |#
+#| purpose:                                                          |#
+#|          to let the user define and start his experiment          |#
+#| method:                                                           |#
+#|          the user modifies environment variables that define his  |#
+#|          experiment. only essential variables are exported, all   |#
+#|          others are written to the environment file $SETENV,      |#
+#|          which is sourced at the beginning of the HARMONIE system |#
+#|          scripts that need to know the HARMONIE environment. the  |#
+#|          environment file also executes the scripts Trace and     |#
+#|          Traps for debugging and trapping of error conditions.    |#
+#|          Start creates required experiment directories. finally   |#
+#|          the experiment is started by submitting it by qsub.      |#
+#| variables:                                                        |#
+#|          none.                                                    |#
+#| author:                                                           |#
+#|          Gerard Cats, KNMI                                        |#
+#|          Toon Moene, KNMI                                         |#
+#|          Rita Standhaft, KNMI                                     |#
+#|          Ben Wichers Schreur, KNMI                                |#
+#|                                                                   |#
+#|===================================================================|#
+
+#================================= define who will run which experiment
+USER=${USER-`logname`}
+EXP=${EXP?"Give experiment code before running Start"} # Experiment code
+
+DTG=${DTG?"Give date/time group DTG before running Start"} # yyyymmddhh
+
+cd $HM_WD
+
+# Source the configuration
+. sms/config_exp.h
+. scr/include.ass
+
+# Check options and create additional updated config file
+perl -S CheckOptions.pl || exit
+. $HM_LIB/sms/config_updated.h
+
+# Compute derived EPS quantities, needed in harmonie.tdf
+export ENSSIZE ENSMFIRST ENSMLAST
+ENSSIZE=`perl -S Ens_util.pl ENSSIZE`
+ENSMFIRST=`perl -S Ens_util.pl ENSMFIRST`
+ENSMLAST=`perl -S Ens_util.pl ENSMLAST`
+ENSCTL=`perl -S Ens_util.pl ENSCTL $ENSCTL`
+
+# Find longest forecast and boundary file lengths
+# mSMS needs this for the PLAYFILE
+export LLMAX=0
+if [ "$SIMULATION_TYPE" = "climate" ] ; then
+  LLMAX=$(( 31 * 24 ))
+else
+  if [ ${LL_CLA-0} -gt 0 ]; then
+    LLMAX=$LL_CLA
+  else
+    LLMAX=$(perl -S Ens_util.pl LLMAX)
+  fi
+fi
+
+export BDLLMAX=0
+bdllmax=$(( $LLMAX + $BDINT - 1 ))
+BDLLMAX=$(( $bdllmax - $bdllmax % $BDINT ))
+# If minute output we need a time step derived LLMAX
+if [ "$TFLAG" == "min" ]; then
+  if [ "$TSTEP" -gt 0 ]; then
+    export LLMAX_TS=$(( $LLMAX * 3600 / $TSTEP ))
+  else
+    echo "TSTEP is not > 0. Probably not set"
+    exit 1
+  fi
+else
+   export LLMAX_TS=$LLMAX
+fi
+
+export BDSTEP=$(( $BDINT * $NBDMAX ))
+
+#===== preparatory actions
+
+if [ "$CLEAN" != false ]; then
+#  create progress log files
+   cat << EOD > $HM_WD/progress.log
+DTG=$DTG export DTG
+DTGBEG=${DTGBEG-$DTG}
+EOD
+fi  # end if-test on CLEAN
+if [ "$CLEAN" != false -o ! -s $HM_WD/progressPP.log ]
+then
+   cat << EOD > $HM_WD/progressPP.log
+DTGPP=$DTG export DTGPP
+EOD
+fi  # end if-test on CLEAN
+
+#========================================================= progress.log
+[ -s $HM_WD/progress.log ] &&
+{					# copy lines 'var=val' and 'var=val export var'
+  HM_CLA="`perl -ne 'unless ( m~\bDTG=~ ) { s/export .*$//; print }' $HM_WD/progress.log` $HM_CLA"
+}
+
+# SMS/ecFlow runs in HM_DATA
+cd $HM_DATA
+
+# Check that another mSMS scheduler is not already running for this EXP
+if [ -s mSMS.pid ]; then
+  pid=`head -1 mSMS.pid`
+  psu=`ps -fu $USER | grep mSMS | grep " $pid "`
+  if [ "$psu" = "" -a "$QSUB" != yes ]; then
+    echo "Removing $HM_DATA/mSMS.pid as process $pid is no longer running."
+    rm mSMS.pid
+    rm -f .webserver
+    sleep 1
+  else
+    echo "Another mSMS scheduler with pid $pid is already running for this experiment."
+    echo "$psu"
+    echo "To connect the monitor (mXCdp) to the running scheduler, type: 'Harmonie mon'."
+    exit 1
+  fi
+fi
+
+# StartDate etc: in the environment for the .tdf -> .def preprocessor
+. $HM_WD/progress.log
+					export DTGBEG
+DTGEND=${DTGEND-$DTG}			export DTGEND
+StartDate=`mandtg -date $DTG`		export StartDate
+StartHour=`mandtg -hour $DTG`		export StartHour
+EndDate=`mandtg -date $DTGEND`		export EndDate
+EndHour=`mandtg -hour $DTGEND`		export EndHour
+. $HM_WD/progressPP.log
+StartDatePP=`mandtg -date $DTGPP`	export StartDatePP
+StartHourPP=`mandtg -hour $DTGPP`	export StartHourPP
+					export LL
+# Make sure the PLAYFILE is defined and a part of the environment regardless if it is set as CLA
+[ "$PLAYFILE" ] || 
+if [ $SIMULATION_TYPE = "climate" ] ; then
+  PLAYFILE=climsim
+else
+  PLAYFILE=harmonie
+fi
+export PLAYFILE
+HM_CLA="$HM_CLA PLAYFILE=$PLAYFILE "
+
+# Check options for individual ensemble members if relevant
+if [ $ENSSIZE -gt 0 ]; then
+   perl -S CheckMemberOptions.pl || exit
+fi
+
+# start miniSMS, figure out options to use
+[ "$DEBUG" ] && SMSOPTS="--debug $DEBUG"
+[ "$HALTED" ] && SMSOPTS="$SMSOPTS --halted"
+[ "$LEAD" ] && SMSOPTS="$SMSOPTS --lead"
+[ "$PROD" ] && SMSOPTS="$SMSOPTS --autoexit"
+[ "$AUTOEXIT" ] && SMSOPTS="$SMSOPTS --autoexit $AUTOEXIT"
+[ "$AUTOABORT" ] && SMSOPTS="$SMSOPTS --autoabort $AUTOABORT"
+[ "$SMSTASKMAX" ] && SMSOPTS="$SMSOPTS --taskmax $SMSTASKMAX"
+
+
+#Start starts completely anew:
+if [ ! "$resume" ]; then
+   rm -f $PLAYFILE.check $PLAYFILE.log
+   rm -f %$EXP%*.complete
+   rm -f %$EXP%*.aborted
+   rm -f %$EXP%*.active
+   rm -f %$EXP%*=*
+   if [ "$COMPCENTRE" = ECMWF -a "x$HOST1" != x ]; then
+      ${RSH-rsh} $HOST1 rm -rf $JOBOUTDIR/$EXP  # rsh, merely to avoid NFS at ECMWF 
+   else
+      rm -rf $JOBOUTDIR/$EXP
+   fi
+   [ -d $EXP ] && find $EXP -name '*.[1-9]' -exec rm -f {} \; # old logfiles
+fi
+
+# Check mini-SMS is running on HOST0
+[ "$HOST0" = `hostname` ] || { echo "HOST0 must equal '`hostname`' but it is '$HOST0' - correct in Env_system ($ENV_SYSTEM)" >&2; exit 1; }
+
+export STDOUT_PREFIX=HM_   # So mini-XCdp can find the collected logs
+
+# Disable the old graphics if the HTTP server is enabled
+[ ${mSMS_WEBPORT-1} -gt 0 ] && export mXCdp=DISABLE
+
+# Submit mSMS.pl to a batch queuing system if instructed so
+if [ "$SCHEDULER" = "ECFLOW" ]; then
+  export ECF_LOGHOST=localhost
+  [ "$COMPCENTRE" = "ECMWF" ] && ECF_LOGHOST=cca-log
+  myuid=$(id -u)
+  export ECF_LOGPORT=$((35000+myuid))
+  export_ENV.pl -p $HM_DATA/_ecFlow_submit_env
+  ${PERL_TK-perl} -S mSMS.pl $SMSOPTS --prepare $PLAYFILE --debug 0 > ECF.log 2>&1 
+  $HM_LIB/scr/Start_ecFlow.sh >> ECF.log 2>&1 &
+  echo "loggings and error messages go to $HM_DATA:"
+  echo "   ECF.log contains log of ecflow"
+  exit
+elif [ "$SCHEDULER" = "MSMS" ]; then
+  if [ "$QSUB" = yes -a -s $HM_LIB/scr/mSMS.job ]; then
+   cp $HM_LIB/scr/mSMS.job $HM_DATA
+   # no automatic monitor in this case
+   #[ ${mSMS_WEBPORT-1} -eq 1 ] && export mSMS_WEBPORT=2
+   export SMSOPTS
+   export_ENV.pl -s $HM_DATA/.mSMS_env_sh
+   echo "--prepare" > $HM_DATA/.msmsopts
+   env __mSMS__=0 JOBOUTDIR=$HM_DATA perl -S $HM_LIB/scr/Submit.pl -d $HM_DATA $HM_DATA/mSMS.job
+   echo "mSMS.pl submitted to batch queuing system,"
+  else
+   # Start the scheduler in the background
+   ${PERL_TK-perl} -S mSMS.pl $SMSOPTS --prepare --play $PLAYFILE > mSMS.log 2>&1 &
+   SMS_PROCESS=$!
+   echo "mSMS.pl started in the background as process $SMS_PROCESS,"
+  fi
+  echo "loggings and error messages go to $HM_DATA:"
+  echo "   mSMS.log contains log of mini-SMS"
+  echo "   $PLAYFILE.log contains log of the run, produced by SMS"
+else
+  echo "Unkown scheduler:$SCHEDULER"
+  exit 1 
+fi
+
+# Start standalone monitor talking to mSMS over http connection
+if [ ${mSMS_WEBPORT-1} -eq 1 ]; then
+   echo "mXCdp.pl started in the background, output in $HM_DATA/mXCdp.log"
+   nohup ${PERL_TK-perl} -S mXCdp.pl > mXCdp.log 2>&1 &
+else
+   echo "No monitor started for this run, type \"Harmonie mon\" to start it."
+fi
+if [ "${mSMS_WAIT-no}" = "yes" ]; then
+   wait
+else
+   true
+fi

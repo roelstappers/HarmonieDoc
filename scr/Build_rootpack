@@ -1,0 +1,113 @@
+#!/bin/bash
+
+
+#
+# Build a mainpack with gmkpack
+#
+# Argument : FORCE_BUILD (yes/no)
+#
+#
+
+. header.sh
+
+# Redefine PACK
+export HOMEPACK=$ROOTPACK
+export HOMEBIN=$ROOTPACK
+export SHELL=/bin/ksh
+
+# The rootpack location
+ROOTDIR=$ROOTPACK/${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION
+
+# Name of the master
+PROG=`echo $MODEL | tr '[A-Z]' '[a-z]'`
+
+
+# Take argument on FORCE_BUILD
+if [ $# -eq 1 ] ; then
+  FORCE_BUILD=$1
+else
+  FORCE_BUILD=no
+fi
+
+
+#
+# Do nothing if ROOTPACK already exists and we do not force a build
+#
+if [ -s $ROOTDIR ] ;then
+
+  if [ $FORCE_BUILD == no ] ; then
+   echo "Found ROOTPACK=$ROOTDIR"
+   trap - 0
+   exit
+  fi
+
+  if [ ! $( stat -c "%U" $ROOTDIR ) =  $USER ] ; then
+   echo "You are not owner of $ROOTDIR"
+   exit 1
+  fi
+
+fi
+
+#
+# Create the ics_$PROG and ics_precompilers files
+#
+if [ ! -s $ROOTDIR/ics_$PROG ] ; then
+  gmkpack -r $REVISION -b $BRANCH -o $OPTION -n $VERSION -a -s -p $PROG || exit
+fi
+
+# Make sure the rootpack belongs to the group hirald at ECMWF
+if [ "$COMPCENTRE" = "ECMWF" ] ; then
+  chgrp -R hirald $ROOTDIR
+  chmod g+s $ROOTDIR
+fi
+
+
+#
+# Sync sources from HM_REV and HM_LIB
+#
+
+cd $ROOTDIR/src/local || exit
+
+for SYNC_DIR in $HM_LIB/rep_src $HM_LIB ; do
+  if [[ -s $SYNC_DIR/src ]] ; then
+   for PROJ in $( ls $SYNC_DIR/src ) ; do
+       if [ ! $PROJ == "aeolus" ] ; then
+          ${RSYNC-rsync} -au $RSYNC_EXCLUDE $SYNC_DIR/src/$PROJ/ $PROJ || exit
+       fi
+   done
+  fi
+done
+
+# Create three AEOLUS dummy files
+touch $ROOTDIR/src/unsxref/verbose/aeolus_l2bp_primary_ec_
+touch $ROOTPACK/${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION/src/unsxref/verbose/aeolus_l2bp_setup_ec_
+touch $ROOTPACK/${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION/src/unsxref/verbose/aeolus_l2bp_unsetup_ec_
+
+#
+# Run the compilation
+#
+
+cd $ROOTDIR || exit
+
+# Start from a clean envorinment
+cleanpack -f || exit
+
+# Compile precompilers
+./ics_precompilers || exit
+
+# Compile IFS
+./ics_$PROG || exit
+
+# Clean the successfully built main pack
+cd $ROOTPACK || exit
+lockpack -f ${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION || exit
+
+# Make this pack writable to your group
+if [ "$COMPCENTRE" = "ECMWF" ] ; then
+  chgrp -R hirald ${ROOTDIR}
+  chmod -R g+rw   ${ROOTDIR}
+fi
+
+# Normal exit
+trap - 0
+exit

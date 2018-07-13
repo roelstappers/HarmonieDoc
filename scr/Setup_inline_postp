@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# Setup inline postprocessing  
+#
+# Select_postp.pl is expected to generate three namelists
+# select_p0 for t=0
+# select_p1 for t>0 and at full hours
+# select_p2 for t>0 and at non full hour minute output
+#
+# Adjust the content of the namelists in Select_postp.pl
+# and the frequency below to fit your needs
+#
+
+# Generate the namelists
+
+perl -S Select_postp.pl || exit 
+
+#
+# Link the appropriate climate file(s)
+#
+ln -sf $CLIMDIR/m$( mandtg -month $DTG ) Const.Clim
+ln -sf $CLIMDIR/m$( mandtg -month $DTG ) const.clim.$DOMAIN
+
+#
+# Get the output times and generate lists
+#
+
+# Initital time is treated separately
+ln -sf select_p0 xxt00000000
+
+PPLIST=$( perl -S Output_freq.pl POSTLIST )
+
+case $TFLAG in 
+  h)
+   # The same output stream for all output timesteps
+   ln -sf select_p1 xxtddddhhmm
+  ;;
+  min)
+
+   for I in $PPLIST; do
+     # Two output streams with different output at full hours and 
+     # one at non full hours
+   
+     i=$(( $TSTEP*$I/60 ))
+     mm=`perl -e "printf('%2.2i', '$i' % 60)"`
+     h=`perl -e "printf('%6.6i', '$i' / 60)"`
+     hh=`perl -e "printf('%2.2i', '$h' % 24)"`
+     dd=`perl -e "printf('%4.4i', '$h' / 24)"`
+     if [ $mm = 00 ] ; then
+       ln -sf select_p1 xxt${dd}${hh}${mm}
+     elif [ ! $mm = 00 ] ; then
+       ln -sf select_p2 xxt${dd}${hh}${mm}
+      fi
+
+  done
+
+  ;;
+  *)
+  echo "TFLAG=$TFLAG not implemented"
+  exit 1
+  ;;
+
+esac
+
+# Make a list of the choices
+ls -1 xxt* > dirlst

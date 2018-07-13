@@ -1,0 +1,292 @@
+#!/usr/bin/perl
+
+use File::Basename;
+use File::Find;
+use File::Path;
+
+our($complete, $kill, $erase1, $erase2, $escape, $tty_raw_noecho, $tty_restore, $stty, $tty_safe_restore);
+our($tty_saved_state) = '';
+CONFIG: {
+    $complete = "\004";
+    $kill     = "\025";
+    $erase1 =   "\177";
+    $erase2 =   "\010";
+    $escape =   "\033";
+    foreach my $s (qw(/bin/stty /usr/bin/stty)) {
+	if (-x $s) {
+	    $tty_raw_noecho = "$s raw -echo";
+	    $tty_restore    = "$s -raw echo";
+	    $tty_safe_restore = $tty_restore;
+	    $stty = $s;
+	    last;
+	}
+    }
+}
+
+sub Complete {
+    # this function has been shamelessly copied form the standard perl library, and modified
+    my($prompt, @cmp_lst, $cmp, $test, $l, @match);
+    my ($return, $r) = ("", 0);
+
+    $return = "";
+    $r      = 0;
+
+    $prompt = shift;
+    if (ref $_[0] || $_[0] =~ /^\*/) {
+	@cmp_lst = sort @{$_[0]};
+    }
+    else {
+	@cmp_lst = sort(@_);
+    }
+
+    # Attempt to save the current stty state, to be restored later
+    if (defined $stty && defined $tty_saved_state && $tty_saved_state eq '') {
+	$tty_saved_state = qx($stty -g 2>/dev/null);
+	if ($?) {
+	    # stty -g not supported
+	    $tty_saved_state = undef;
+	}
+	else {
+	    $tty_saved_state =~ s/\s+$//g;
+	    $tty_restore = qq($stty "$tty_saved_state" 2>/dev/null);
+	}
+    }
+    system $tty_raw_noecho if defined $tty_raw_noecho;
+    LOOP: {
+        local $_;
+        print($prompt, $return);
+        while (($_ = getc(STDIN)) ne "\r") {
+            CASE: {
+                # (TAB) attempt completion
+                $_ eq "\t" && do {
+                    @match = grep(/^\Q$return/, @cmp_lst);
+                    unless ($#match < 0) {
+                        $l = length($test = shift(@match));
+                        foreach $cmp (@match) {
+                            until (substr($cmp, 0, $l) eq substr($test, 0, $l)) {
+                                $l--;
+                            }
+                        }
+                        if ($l - $r) {
+                            print("\a");
+                            print($test = substr($test, $r, $l - $r));
+                            $r = length($return .= $test);
+                        }
+                        else {
+                            # completion list
+                            print(join("\r\n", '', grep(/^\Q$return/, @cmp_lst)), "\r\n");
+                            redo LOOP;
+                        }
+                    }
+                    last CASE;
+                };
+
+                # (^D) completion list
+                $_ eq $complete && do {
+                    print(join("\r\n", '', grep(/^\Q$return/, @cmp_lst)), "\r\n");
+                    redo LOOP;
+                };
+
+                # (^U) kill
+                $_ eq $kill && do {
+                    if ($r) {
+                        $r	= 0;
+			$return	= "";
+                        print("\r\n");
+                        redo LOOP;
+                    }
+                    last CASE;
+                };
+
+                # (DEL) || (BS) erase
+                ($_ eq $erase1 || $_ eq $erase2) && do {
+                    if($r) {
+                        print("\b \b");
+                        chop($return);
+                        $r--;
+                    }
+                    last CASE;
+                };
+
+                # (ESC) escape
+                ($_ eq $escape) && do {
+                    $return = $escape;
+                    last LOOP;
+                };
+
+                # printable char
+                ord >= 32 && do {
+                    $return .= $_;
+                    $r++;
+                    print;
+                    last CASE;
+                };
+            }
+        }
+    }
+
+    # system $tty_restore if defined $tty_restore;
+    if (defined $tty_saved_state && defined $tty_restore && defined $tty_safe_restore)
+    {
+	system $tty_restore;
+	if ($?) {
+	    # tty_restore caused error
+	    system $tty_safe_restore;
+	}
+    }
+    print("\n");
+    die "quitting\n" if ($return eq $escape);
+    $return;
+}
+
+my $Iam = ${[fileparse($0)]}[0];
+
+unless (-d $ENV{'HM_WD'}) {
+  die "$Iam: FATAL ERROR, cannot find experiment directory $ENV{'HM_WD'}";
+}
+
+if (@ARGV == 0) {
+  chdir($ENV{'HM_REV'}) or die "$Iam: FATAL ERROR, cannot chdir to revision directory $ENV{'HM_REV'}";
+  # user has not specified an object - so find it interactively
+  @objects = <*>;
+  map { $_ .= "/" if -d $_ } @objects;
+  $object = "$ENV{'HM_REV'}/";
+  $get_path = 0;
+  until(-f $object or $get_path) {
+    unless (-d $object) { die "$Iam: $object is not a directory" }
+    print "\n$Iam: entering $object\n";
+    chdir $object or die "$Iam: cannot chdir to $object";
+    @objects = <*>;
+    map { $_ .= "/" if -d $_ } @objects;
+    print "$Iam: ==> press [ENTER] to enter dir or co file, [TAB] to complete or list, [ESC] to quit\n";
+    $_ = Complete("$Iam> $object", @objects);
+    $_ .= "/" if (-d $_);
+    $object .= $_;
+    $object =~ s:/+$:/:;
+    if ($object =~ s:\.\./$::) {
+      $object = dirname($object) . "/";
+      chdir ".." or die "$Iam: FATAL ERROR, cannot chdir back to $object\n";
+    }
+    $object =~ s:\./$::;
+    $get_path = "found" if $object =~ s:/\*$::;
+  }
+  $object =~ s:$ENV{'HM_REV'}/::;
+  @ARGV = ($object);
+}
+
+chdir($ENV{'HM_REV'}) or die "$Iam: FATAL ERROR, cannot chdir to revision directory $ENV{'HM_REV'}";
+$subdir = ".";
+
+ARG: foreach ( @ARGV ) {
+  s:/$::;
+  # inherit the path from the former argument if no new path is given
+  $subdir = dirname($_) if m:/:;
+  $file = basename($_);
+  @found = ();
+  unless (-f "${subdir}/$file") {
+    # if file is not directly found, look for it
+    print "$Iam: looking for $file ...\n";
+    find(\&list, ".");
+    sub list {
+      if ($File::Find::name !~ m:/\.(svn/|svn\b):) {
+        push @found, $File::Find::name if grep /\b${file}$/, $File::Find::name;
+      }
+    }
+    unless (@found) {
+      print "$Iam: looking for files named similar to $file ...\n";
+      find(\&listsimilar, ".");
+      sub listsimilar {
+        if ($File::Find::name !~ m:/\.(svn/|svn\b):) {
+          push @found, $File::Find::name if grep /${file}/, $File::Find::name;
+        }
+      }
+    }
+    map { $_ .= "/" if (-d $_) } @found;
+    map { s/^\.\/// } @found;
+    @list_found = @found;
+    # check in advance what files already exist, and mark them
+    map { $_ .= "  --exists--" if (-f "$ENV{HM_WD}/$_") } @list_found;
+    if (@found > 1) {
+      print "$Iam: found following matches, please select one by number, or type 'q' to skip\n";
+      $count = 0;
+      map { printf " %2d) %s\n", ++$count, $_ } @list_found;
+      print ">> ";
+      $asking = 1;
+      while ($asking) {
+        $_ = <STDIN>;
+        if (/^[1-9][0-9]*/) {
+          $_--;
+          unless (defined $found[$_]) {
+            print "$Iam: number out of bounds\n>> ";
+            next;
+          }
+          $choice = $found[$_];
+          $subdir = dirname($choice);
+          $file = basename($choice);
+          $asking = 0;
+        }
+        elsif (/^[qQ]/) {
+          print "$Iam: skipping $file\n";
+          next ARG;
+        }
+        else {
+          print "$Iam: please type a positive number or 'q' to skip this\n>> ";
+        }
+      }
+    }
+    elsif (@found == 1) {
+      $found[0] =~ s:/$::;
+      $subdir = dirname($found[0]);
+      $file = basename($found[0]);
+    }
+    else {
+      $file = "'" . $file . "'";
+      die "$Iam: cannot find $file under $ENV{'HM_REV'}\n";
+    }
+  }
+  $source_path = "$ENV{HM_REV}/$subdir";
+  $target_path = "$ENV{HM_WD}/$subdir";
+  $source_path =~ s:/\.$::;
+  $target_path =~ s:/\.$::;
+  mkpath("$target_path") unless -d "$target_path";
+  if (-d "$source_path/$file") {
+    find(\&copy, "$source_path/$file");
+    sub copy {
+      if (-f $_) {
+        my ($file, $dir) = ($_, $File::Find::dir);
+        if ($dir !~ /\.svn/) {
+          $dir =~ s~^$ENV{HM_REV}~$ENV{HM_WD}~;
+          mkpath($dir) unless (-d $dir);
+          $sdir = $dir;
+          $sdir =~ s:^$ENV{HM_WD}/?::;
+          $copy = 1;
+          if (-f "$dir/$file") {
+            $copy = 0;
+            print "$Iam: $sdir/$file exists, overwrite? [y,n]  ";
+            $_ = <STDIN>;
+            $copy = 1 if (/^[yY]/);
+          }
+          if ($copy) {
+            system ("cp $File::Find::name $dir/") && warn "$Iam: ERROR, checkout of $File::Find::name failed\n";
+            push @list, "  $sdir/$file\n";
+          }
+        }
+      }
+    }
+  }
+  else {
+    $copy = 1;
+    if (-f "$target_path/$file") {
+      $copy = 0;
+      print "$Iam: $subdir/$file exists, overwrite? [y,n]  ";
+      $_ = <STDIN>;
+      $copy = 1 if (/^[yY]/);
+    }
+    if ($copy) {
+      system( "cp $source_path/$file $target_path/$file" ) && warn "$Iam: ERROR, checkout of $subdir/$file failed\n";
+      push @list, "  $subdir/$file\n";
+    }
+  }
+}
+print "\n$Iam: following files have been checked out:\n" if (@list); 
+print @list;

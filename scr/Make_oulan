@@ -1,0 +1,27 @@
+#!/bin/bash
+
+#
+# Build utilities
+#
+
+
+. header.sh
+
+# Sync possible changed sources
+
+MYTASK=`echo $TASK | awk '{print substr($1,6,20)}'`
+
+if [ "$MAKEUP" == "yes" ]; then
+  cd $HM_LIB/$HARMONIE_CONFIG/src || exit
+  $MAKE CMDROOT=$HM_LIB/util/makeup ROOT=`pwd` LIBDISK=$BINDIR ou_exes
+else
+  cd $HM_LIB/util/$MYTASK/ || exit
+  $MAKE ARCH=$HARMONIE_CONFIG || exit 1
+fi
+
+[[ -s $BINDIR ]] || mkdir -p $BINDIR
+
+cp oulan ShuffleBufr  $BINDIR/.
+
+trap - 0
+exit

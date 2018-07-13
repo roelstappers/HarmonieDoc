@@ -1,0 +1,378 @@
+# $Id: submission.db 5251 2007-08-08 12:53:28Z ksa $   -*- cperl -*-
+# define the  jobs and their submission sequences
+#------------------------------------------------
+# Gerard Cats, July 2004
+# Daniel Santos-Muñoz, 2014
+
+push @INC, split(":",$ENV{PATH});
+eval 'require "Env_submit"' ;
+if ( $@ ) { print STDERR "$@\n"; }
+
+require $ENV{HM_LIB}.'/msms/harmonie.pm';
+
+$instructions = <<EOI;
+This file is the data file to be used by "Submit.pl".
+A job file will be constructed and this job file will be submitted
+with the string $submit (in which the title of the job file to be
+submitted must be $jobfile-q).
+Both the job file title and $submit will be edited according to
+the hash in %edit (strings of the form %$key% will be replaced by
+$value. This currently will not be done recursively).
+The constructed job file will look like:
+
+headers
+input job file (with substituted export variables)
+trailers
+
+headers and trailers are given below. They are also edited according
+to %edit.
+headers and trailers are constructed by a subroutine because
+they are multi-line and perhaps multi-complex.
+
+You are allowed to change the environment variables. E.g. if COFLAGS
+is exported in the input job file by a line exactly matching:
+COFLAGS="-d 2004/12/31" export COFLAGS
+then assigning $COFLAGS = "\"-d 2004/12/30\""  will result in the line
+COFLAGS="-d 2004/12/30" export COFLAGS
+in the $jobfile-q file. Note that you have to explicitly set the surrounding
+quotes by including quoted quotes (\") when you set $COFLAGS. This, of
+course, is needed for all environment variables of which the value contains
+shell metacharacters.
+
+First a set of defaults for $submit, %edit, etc. will be given,
+then overrides per job are allowed. For this, jobs are identified by
+$SMSNAME.
+
+EOI
+
+# The following jobs can be skipped
+
+$complete = 0 ;
+
+# Get the ensmember, and check cold start
+my $dtg = sprintf("%08d%02d",$YMD,$HH);
+$HH = substr($dtg,8,2);
+if ( defined $ENSMBR and $ENSMBR >= 0 ) {
+  $ensmbr = $ENSMBR;
+  $WRK = "$HM_DATA/${YMD}_$HH/mbr$ENSMBR";
+} else {
+  $ensmbr = -1;
+  $WRK = "$HM_DATA/${YMD}_$HH";
+}
+$is_coldstart = "no";
+$cs_file = "$WRK/is_coldstart";
+chomp($is_coldstart = qx(cat $cs_file)) if (-s $cs_file);
+###print STDERR "$SMSNAME: is_coldstart='$is_coldstart'\n";
+
+# No assimilation during first cycle
+if ( $is_coldstart eq 'yes' and
+     (&Env('ANAATMO',$ensmbr) eq '3DVAR' or
+      &Env('ANAATMO',$ensmbr) eq '4DVAR' or
+      &Env('ANASURF',$ensmbr) eq 'CANARI' or
+      &Env('ANASURF',$ensmbr) eq 'CANARI_OI_MAIN' or
+      &Env('ANASURF',$ensmbr) eq 'CANARI_EKF_SURFEX')
+   ) {
+  $complete = 1 if ($SMSNAME =~ m~Analysis/AnUA~ && ! ($SMSNAME =~ m~Analysis/AnUA/Fetch_assim_data~));
+  $complete = 1 if ($SMSNAME =~ m~Analysis/AnSFC~);
+  $complete = 1 if ($SMSNAME =~ m~StartData/Bator~);
+  $complete = 1 if ($SMSNAME =~ m~StartData/Pertobs_ecma~);
+  $complete = 1 if ($SMSNAME =~ m~Analysis/Addsurf~);
+  $complete = 1 if ($SMSNAME =~ m~PostAnalysis~);
+  $complete = 1 if ($SMSNAME =~ m~/odb2ascii~);
+  $complete = 1 if ($SMSNAME =~ m~Perturbations/RunBgpert~);
+  $complete = 1 if ($SMSNAME =~ m~Perturbations/BlendBgpert~);
+  $complete = 1 if ($SMSNAME =~ m~/plotstat~);
+  $complete = 1 if ($SMSNAME =~ m~MakeCycleInput/Hour/Cycle/Observations~);
+  $complete = 1 if ($SMSNAME =~ m~Obsmonitor~);
+
+} else {
+  $complete = 1 if (( &Env('ANASURF',$ensmbr) ne 'none' or 
+                     ( $ensmbr >= 0 and &Env('ANASURF',$ensmbr) eq 'none' 
+                       and &Env('ENSCTL',$ensmbr) != $ensmbr )
+                    ) and ($SMSNAME =~ m~Prep_ini_surfex~ )) ;
+
+  $complete = 1 if ($SMSNAME =~ m~Festat~ && $dtg ne $ENV{DTGEND} ) ;
+  $complete = 1 if ($SMSNAME =~ m~Forecasting/Dfi~);   # Turn off ALARO fdfi after cold start
+}
+# An ensemble experiment with a warmup period runs only control(s) during that period
+if ( exists $ENV{WARMUP_PERIOD} and $ensmbr >= 0 ) {
+  my $ensctl = &Env('ENSCTL',$ensmbr);
+  if ( $ensctl != $ensmbr ) {
+    my $warmup = $ENV{WARMUP_PERIOD} * 24;
+    my $dtgwarm = qx(mandtg $ENV{DTGBEG} + $warmup); chomp $dtgwarm;
+    $complete = 1 if ( $dtg < $dtgwarm );
+  }
+}
+# a sample algorithm (how to vary LL with time of day: long forecast at main hours only)
+# note that still LL may be overwritten by a command-line argument
+if ( $ENV{SIMULATION_TYPE} eq 'climate' ) {
+  if ( $dtg > 0 ) {
+    $LL=`export DTG=$dtg ; Update_LL 2>&1`;
+  }
+} else {
+  $LL = qx( DTG=$dtg; HH2LL.pl $HH $ensmbr );
+}
+chomp $LL;
+
+# Set boundary jobs that have nothing to do complete immediately,
+# without invoking background or batch jobs
+if ( $SMSNAME =~ m|Boundaries/(.*)/?LBC(\d+)/| ) {
+  $mll = $2;
+  $mbr = $1;
+  if ( $mbr =~ /^Mbr(\d{3})/ ) {
+    $mbr = $1;
+  } else {
+    $mbr = -1;
+  }
+  $bdint = &Env('BDINT',$mbr);
+  $mll=$LBCN + $mll * $bdint ;
+  $cll = $LL + $bdint - $LL % $bdint ;
+  $complete = 1 if ($mll > $cll);
+}
+
+#Set member tasks complete if HH is not in their HH_LIST list
+if ( not $complete and $SMSNAME =~ m|/Mbr\d{3}/| ) {
+  $complete = 1;
+  my @cycles = &expand_list(&Env('HH_LIST',$ensmbr),"%d");
+  for (my $i=0; $i<=$#cycles; $i++) {
+    if ( $HH == $cycles[$i] ) {
+      $complete = 0;
+      last;
+    }
+  }
+}
+
+if ( $complete ) {
+  print STDERR "$SMSNAME was set complete by submission.db\n";
+  goto THE_END;
+}
+
+# replace a directory structure by a long title, separated by % - signs:
+$smsname = $SMSNAME; $smsname =~ s~/~%~g;
+
+# defaults:
+
+$host = 0;	# run on this host ($host is the host number)
+
+# The following jobs are not submitted through (mini-)SMS:
+if ( $SMSNAME =~ m~BoundariesChild~ ) {
+  $__mSMS__ = 0;
+  $__SMS__  = 0;
+}
+
+# default jobout title
+unless ( defined $jobout ) {
+  $jobout = "$smsname.$SMSTRYNO";
+}
+
+
+#
+# Fetch the host dependent settings in Env_submit
+#
+my $job_list = &get_job($SMSNAME);
+if ( ref($job_list) eq 'HASH' ) {
+  my %is_special = map {$_=>1} ('SUBMIT','HOST','SMSHOST','KILL','CLIENT','VIEW','EOJ','TRAILER');
+  $submit_commands = '';
+  for my $role ( sort keys %{ $job_list } ) {
+    unless ( exists $is_special{$role} ) {
+      $submit_commands .= $job_list->{$role} . "\n";
+    }
+  }
+  $submit = $job_list->{'SUBMIT'};
+  $host = $job_list->{'HOST'};
+  $smshost = $job_list->{'SMSHOST'};
+  $kill_cmd = $job_list->{'KILL'};
+  $view_cmd = $job_list->{'VIEW'};
+  $client = $job_list->{'CLIENT'};
+  $eoj = $job_list->{'EOJ'};
+  $trailer = $job_list->{'TRAILER'};
+} else {
+  ## Old style return_job, should be cleaned away
+  ($submit_commands,$submit,$host,$SMSHOST,$kill_cmd,$client) = &get_job($SMSNAME) ;
+}
+
+# Some jobs MUST be run on the local host, in the background
+if ( $SMSNAME =~ m~InitRun|LogProgress~ ) {
+   $SMSHOST = $SMSNODE;
+   $submit = "$jobfile-q > $jobout 2>&1 &";
+   $host = 0;
+}
+
+#
+# Create jobout directories
+#
+
+if ( $host == 0 ) {
+   @joboutdir=split('/', $jobout);
+   $#joboutdir -= 1;	# last element in path is the filename, not a directory
+   foreach ( @joboutdir ) {
+      $j_h .= $_ . '/';
+      unless ( -d $j_h ) {
+         undef $!;
+         mkdir $j_h, 0755; if ( $! ) {print STDERR "Could not mkdir $j_h: $!\n"; exit 1}
+      }
+   }
+} else {
+   @joboutdir=split('/', $jobout_host1);
+   $#joboutdir -= 1;	# last element in path is the filename, not a directory
+   $j_h = join('/',@joboutdir);
+   print STDERR "ssh $smshost 'mkdir -p $j_h'\n";        
+   system ("ssh $smshost 'mkdir -p $j_h'");        
+}
+
+# Env_system and PseudoEnvironment for this host
+$Env_system = ${"HM_LIB$host"} . "/Env_system";
+
+# Create headers
+
+$headers = &Headers ( $SMSNAME,$submit_commands,$kill_cmd,$view_cmd,$client,$eoj );
+
+# Handle different forecast lengths, $LL is computed above
+$headers.= "LL=$LL\n" if ($LL ne '');
+
+# create trailers
+
+$trailers = &Trailers( $SMSNAME,$trailer );
+
+ THE_END:
+
+1;
+
+# ------------------------------------------------------------------------------
+sub Headers{
+# Headers: template for headers
+# synopsis: $jobheaders = Headers( $JOB )
+# author: Gerard Cats, 15 April 2004
+   my $job = shift;
+   my $submit_headers = shift;
+   my $kill_command = shift;
+   my $view_command = shift;
+   my $client = shift || 'msms_client';
+   my $eoj_command = shift;
+   my $HH=sprintf "%2.2d", $HH;
+   my $lines = "";
+   $lines .= <<EOH;
+#!/bin/bash
+EOH
+
+   $lines .= $submit_headers;
+   $lines .= "initcmd=\"kill=$kill_command&&view=$view_command\"\n";
+   $lines .= "killcmd=\"$kill_command\"\n";
+   $lines .= "eojcmd=\"$eoj_command\"\n";
+
+# include the mini-SMS headers
+   if ( $__mSMS__ ) {
+      my $smshost = $SMSHOST; $smshost =~ s/(\d+)$//;
+      my $smsnode = $SMSNODE; $smsnode =~ s/(\d+)$//;
+      my $flagdir = $ENV{SMSFLAGDIR} || $SMSHOME;
+      $lines .= "export mSMS_URL='".$ENV{mSMS_URL}."'\n";
+      $lines .= "export mSMS_SIGNAL_TRANSPORT='".$ENV{mSMS_SIGNAL_TRANSPORT}."'\n";
+      if ( $smshost eq $smsnode 	# runs on the local node
+	   or -w $flagdir ) {           # shared filesystem directory
+         if ( $smshost ne $smsnode ) { 	# runs on the HOST1
+	    if ( exists $ENV{SMSFLAGDIRH1} ) {
+	       $lines .= "export SMSFLAGDIRH1='".$ENV{SMSFLAGDIRH1}."'\n";
+	    }
+	 }
+	 $lines .= <<EOH;
+smsinit()
+{ $client -p $SMSNAME -s active -c \"\$initcmd\"; }
+smsabort()
+{ $client -p $SMSNAME -s aborted -c \"\$eojcmd\";  echo 'SMS-> aborted';  }
+smscomplete()
+{ $client -p $SMSNAME -s complete -c \"\$eojcmd\"; echo 'SMS-> complete'; }
+EOH
+      } else {	# on a remote host: rcp to SMSNODE:flagdir
+         $lines .= <<EOH;
+smsinit()
+{ echo \$\* > $smsname.active;   $RCP $smsname.active   $SMSNODE:$flagdir; rm -f $smsname.active;   }
+smsabort()
+{ echo > $smsname.aborted;  $RCP $smsname.aborted  $SMSNODE:$flagdir; rm -f $smsname.aborted
+  echo 'SMS-> aborted'; }
+smscomplete()
+{ echo > $smsname.complete; $RCP $smsname.complete $SMSNODE:$flagdir; rm -f $smsname.complete
+  echo 'SMS-> complete'; }
+EOH
+      }
+   }
+   $lines .= <<EOH;
+ulimit -S -s unlimited || ulimit -s
+ulimit -S -m unlimited || ulimit -m
+ulimit -S -d unlimited || ulimit -d
+EOH
+
+   return $lines;
+}
+# ------------------------------------------------------------------------------
+sub Trailers{
+# Trailers: template for trailers
+# synopsis: $jobheaders = Trailers( $JOB )
+# author: Gerard Cats, 15 April 2004
+   my($job,$trailer) = @_;
+   my $lines = "";
+# code to wait for completion - but under (mini-)SMS, (mini-)SMS will do it
+   unless ( $__mSMS__ or $__SMS__ ) {
+      if ( $LOADLEVELER eq 'yes' ) {		# LoadLeveler ---------------------
+         $lines .= <<\EOH;			# LoadLeveler needs a list in JOBID
+MAXWAIT=${MAXWAIT-10800}
+for job in $JOBID; do
+   maxwait=0
+   [ $maxwait -ge $MAXWAIT ] && { llcancel $job; continue; }
+
+   while [ 1 ]; do
+      llq "$job" -r %%st %%c >job_ll || { llcancel $job; break; }
+      [ `egrep -c "\!" job_ll` -le 0 ] && break
+      sleep 10
+      maxwait=`expr $maxwait + 10`
+      [ $maxwait -ge $MAXWAIT ] && { break; }
+   done
+
+   rm -f job_ll
+done
+EOH
+      } else {		# non-LoadLeveler: wait for the background jobs
+         $lines .= <<EOH;
+###wait
+EOH
+}
+
+   } else {	# (mini-)SMS code
+      $lines .= <<EOH;
+smscomplete
+trap - 0
+EOH
+   }
+   if ($trailer) {
+     $lines .= "$trailer\n";
+   }
+   return $lines;
+}
+# ------------------------------------------------------------------------------
+sub return_job {
+  my $family = shift;
+
+  # Defaults
+  unless ( exists $job_list{$family} ) { $family = 'default'; } ;
+  $job_list{$family}{'SMSHOST'} ||= $SMSHOST;
+  $job_list{$family}{'SUBMIT'}  ||= "$jobfile-q > $jobout 2>&1 &";
+  $job_list{$family}{'KILL'}    ||= 'KillPid $$';
+  $job_list{$family}{'CLIENT'}  ||= 'msms_client';
+
+  return $job_list{$family};   # Note: hash reference
+
+}
+# ------------------------------------------------------------------------------
+sub build_list {
+  push @_, 'scalar','par' unless(@_);
+  foreach $f ( @_) {
+    $my_list = $f."_list";
+    $my_job  = $f."_job";
+    foreach $job ( @{ $my_list } ) {
+      for my $key ( keys %{ $my_job } ) {
+        $job_list{$job}{$key} = ${$my_job}{$key} ;
+      }
+    }
+  }
+}
+
+1;	# to succeed do file

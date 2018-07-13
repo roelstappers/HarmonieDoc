@@ -1,0 +1,102 @@
+#!/bin/bash
+
+set -x 
+
+if [ "$#" -ne "6" -a "$#" -ne "8" -a "$#" -ne "10" ]; then
+  echo "Usage $0 dtgstart dtgend base obtype baseroot workdir [ instrument instrument_selection [ instrument_satelite satelite_channels ]]"
+  exit 1
+else
+  dtgstart=$1
+  dtgend=$2
+  base=$3
+  obtype=$4
+  baseroot=$5
+  workdir=$6
+  instrument=$7
+  instrument_selection=$8
+  instrument_satelite=$9
+  satelite_channels=${10}
+
+  # Set base
+  BASE=`echo $base | tr '[:lower:]' '[:upper:]'`
+
+  if [ "$FCINT" == "" -o "$WRK" == "" ]; then
+    echo "The following environment variables are needed:"
+    echo "   FCINT: $FCINT"
+    echo "     WRK: $WRK  "
+    exit 1
+  fi
+
+  # Make working directory
+  [ -d $WRK/obsmon ] || mkdir -p $WRK/obsmon
+  cd $WRK/obsmon || exit 1
+
+   
+  basedir=$base
+  if [ "$baseroot" == "odb_can" ]; then
+    basedir=${base}_sfc
+  fi
+
+  # Create this base
+  [ -d $basedir ] || mkdir -p $basedir
+  cd $basedir || exit 1
+
+  # Create (new) working directory
+  [ -d $workdir ] && rm -r $workdir
+  [ -d $workdir ] || mkdir -p $workdir
+  cd $workdir || exit 1
+
+  # Default obsusage for this obtype
+  obsusage="l${obtype}=.T.,"
+
+  # Manipulate obtype
+  partinfo_name_instrument=""
+  partinfo_instrument_selection=""
+  partinfo_end1=""
+  if [ "$instrument" != "" -a "$instrument_selection" != "" ]; then
+    partinfo_name_instrument="&$instrument"
+    partinfo_instrument_selection="$instrument_selection,"
+    partinfo_end1="/"
+  fi
+  partinfo_name_satelite=""
+  partinfo_channel_selection=""
+  partinfo_end2=""
+  if [ "$instrument_satelite" != "" -a "$satelite_channels" != "" ]; then
+    partinfo_name_satelite="&$instrument_satelite"
+    partinfo_channel_selection="channels=$satelite_channels,"
+    partinfo_end2="/"
+  fi
+
+  # Namelist for obsmon
+  cat > fort.4 << EOF
+&obsmon
+  verbose=3,
+  $obsusage
+  odbbase="${base}",
+  lusage=.TRUE.,
+  lstat=.TRUE.,
+/
+
+$partinfo_name_instrument
+$partinfo_instrument_selection
+$partinfo_end1
+
+$partinfo_name_satelite
+$partinfo_channel_selection
+$partinfo_end2
+
+EOF
+  cat fort.4
+
+  # Set ODB variables
+  export ODB_CMA=$BASE
+  export ODB_SRCPATH_$BASE="$WRK/$baseroot/$BASE"
+  export ODB_DATAPATH_$BASE="$WRK/$baseroot/$BASE"
+  export ODB_IDXPATH_$BASE="$WRK/$baseroot/$BASE/idx"
+  export IOASSIGN="$WRK/$baseroot/$BASE/IOASSIGN"
+
+  # Generate statistics for each dtg
+  # Run obsmon program to generate statistics
+  $BINDIR/obsmon $dtgstart $dtgend $FCINT  
+
+fi 

@@ -1,0 +1,136 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+d_PERTOBS=$WRK/$WDIR
+
+. include.ass
+
+
+#-- enter the working dir
+cd ${d_PERTOBS}
+
+#-- Perturbing the observations
+if [ "$PERTSURF" == "ECMA" ]; then
+   #--- Get Local vars
+   ANASURF_MODE_SMS=`echo $SMSPARENT`
+   if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC" -a "$ANASURF_MODE" == "both" ]; then
+     export d_DB=$WRK/odb_can_ori2
+     export d_DBMERGE=$WRK/odb_can_merge2
+     export d_DBCAN=$WRK/odb_can2
+   else
+     export d_DB=$WRK/odb_can_ori
+     export d_DBMERGE=$WRK/odb_can_merge
+     export d_DBCAN=$WRK/odb_can
+   fi
+
+   InitDir ${d_DB} ${d_DBMERGE}
+
+   #--- Merge the ODB sub-bases i.e. create an
+   #    ECMA virtual base if no 3dvar
+   $HM_LIB/scr/Merge -d ${d_DBMERGE} -t "$types_BASE_can" -s 1
+
+   InitDir ${d_DBMERGE} ${d_DBCAN}
+
+
+   #--- ODB settings for CANARI
+   export ODB_CMA=ECMA
+   if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC" -a "$ANASURF_MODE" != "after" ]; then
+      # First AnSFC for 4DVAR when ANASURF_MODE=before or after is FCINT/2 before DTG
+      start_4dv=$(( $FCINT / 2 ))
+      dat=${YMD}${HH}
+      dat=`mandtg $dat + -$start_4dv`
+      export ODB_ANALYSIS_DATE=`echo $dat | cut -c1-8`
+      export ODB_ANALYSIS_TIME=`echo $dat | cut -c9-10`0000
+      export BASETIME=$dat
+  else
+      export ODB_ANALYSIS_DATE=${YMD}
+      export ODB_ANALYSIS_TIME=${HH}0000
+      export BASETIME=$DTG
+  fi
+  export ODB_IO_METHOD=1
+  export ODB_LDA_METHOD=1
+  export ODB_STATIC_LINKING=1
+  export ODB_MERGEODB_DIRECT=1
+  export ODB_ECMA_CREATE_POOLMASK=1
+  export ODB_ECMA_POOLMASK_FILE=ECMA.poolmask
+  export ODB_SRCPATH_ECMA=${d_DBCAN}/ECMA
+  export ODB_DATAPATH_ECMA=${d_DBCAN}/ECMA
+  export IOASSIGN=${d_DBCAN}/ECMA/IOASSIGN
+  for base in $types_BASE_can; do
+       cd $d_DBCAN/ECMA.$base
+        $MPPGL $BINDIR/PERTCMA $ENSMBR ECMA CANARI \
+       || { echo "problem with pertobs executable" ; exit 1 ; }
+  done
+
+fi
+
+if [ "$PERTATMO" == "ECMAOFF" ]; then
+
+  ulimit -S -c unlimited || ulimit -c
+  ulimit -S -s unlimited || ulimit -s
+
+  #--merge the ODB sub-bases i.e. create an
+  #  ECMA virtual base
+  # And declare local vars
+
+  export d_DB=$WRK/odb
+  export d_DBVAR=$WRK/odbvar
+  typeset d_DB
+
+  # --- Prepare for the merge inline
+  InitDir $d_DB $d_DBVAR || exit 1
+
+  #--- check odb
+  CheckDir ${d_DBVAR}
+
+  #---  ODB settings for screening
+  export ODB_CMA=ECMA
+  export ODB_SRCPATH_ECMA=${d_DBVAR}/ECMA
+  export ODB_DATAPATH_ECMA=${d_DBVAR}/ECMA
+  export ODB_ANALYSIS_DATE=${YMD}
+  export ODB_ANALYSIS_TIME=${HH}0000
+  export ODB_MERGEODB_DIRECT=1
+  export ODB_ECMA_CREATE_POOLMASK=1
+  export ODB_ECMA_POOLMASK_FILE=${d_DBVAR}/ECMA/ECMA.poolmask
+        
+  #--- prepare db dir
+  RecreateDir ${d_DBVAR}/ECMA
+  #-- create merged ioassign file
+  cd ${d_DBVAR}/ECMA
+  liste=""
+  for base in ${types_BASE}; do
+    liste=${liste}" -t "${base}
+  done
+  echo "liste is $liste"
+  $HM_LIB/scr/merge_ioassign -d ${d_DBVAR} ${liste} || \
+    { echo "MERGE_IOASSIGN failed" ; exit 1 ; } 
+
+  export ODB_SRCPATH_ECMA=${d_DBVAR}/ECMA
+  export ODB_DATAPATH_ECMA=${d_DBVAR}/ECMA
+
+  #-- Perturbing the observations
+  export IOASSIGN=${d_DBVAR}/ECMA/IOASSIGN
+  for base in $types_BASE; do
+     cd $d_DBVAR/ECMA.$base
+      $MPPGL $BINDIR/PERTCMA $ENSMBR ECMA \
+      || { echo "problem with pertobs executable" ; exit 1 ; }
+  done
+  
+fi
+
+
+# Normal exit
+cd $WRK
+rm -fr $WDIR
+trap - 0
+exit
+

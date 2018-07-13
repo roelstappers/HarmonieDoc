@@ -1,0 +1,64 @@
+#!/bin/bash
+
+. header.sh
+
+outfile=$CLIMDIR/SPG_param.sh
+if [ -s $outfile ]; then
+    echo "Output file '$outfile' exists, nothing to do!"
+    trap - 0
+    exit 0
+fi
+
+[[ -s $WRK ]] || $MKDIR $WRK
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR $1 ; exit 1" 0
+
+#
+echo "Trying to create: '$outfile'"
+
+nstrides=$((3600/TSTEP))
+sdev=${SDEV_SDT:-0.5}
+lscale=$( perl -e "print ${XLCOR_SDT:-500000} / 1000" )
+tscale=${TAU_SDT:-10800}
+a_dt_min=${SPGADTMIN_SDT:-0.15}
+a_dt_max=${SPGADTMAX_SDT:-3.0}
+dxykm=$( perl -e "print $GSIZE / 1000." )
+
+cat > SPG.conf <<EOF
+Configuration parameters
+$NLON             ! xngrid - hor. gridsize
+$NLAT             ! yngrid - hor. gridsize
+0                 ! vertngrid - vert. gridsize
+$TSTEP            ! timestride - time step, sec
+$nstrides         ! nstrides - number of time strides
+0                 ! nsample - number of samples generated
+$sdev             ! Std - field standard deviation
+$lscale           ! L(0.5), km  (25-425 km)
+$tscale           ! T(0.5), sec (600-36000 sec)
+1.0               ! delta - parameter responsible for vertical correlations
+$a_dt_min         ! a_dt_min - parameter that controls accuracy of time integration (0.01-0.25)
+$a_dt_max         ! a_dt_max - parameter that controls accuracy of time integration (1-3)
+20                ! n_0 - starting point of coarse grid
+0.15              ! epsilon - relation between two neighbouring coarse grid points
+1                 ! intpl_acceleration - interpolation acceleration (+1 yes, -1 no)
+15                ! comput_resolution - computational resolution (5-20)
+-1                ! calc_stat - calculate field statistics (+1 yes, -1 no)
+$dxykm            ! horizontal mesh size, km
+405.7             ! dseed - random numbers generation parameter
+EOF
+
+cat SPG.conf
+
+$BINDIR/SPG SPG.conf $outfile || exit
+
+cat $outfile
+
+# Normal exit
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

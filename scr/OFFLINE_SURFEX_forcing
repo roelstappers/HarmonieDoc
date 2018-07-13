@@ -1,0 +1,146 @@
+#!/bin/bash
+
+#
+# EKF SURFEX 
+#
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+if [ "$#" -ne "2" ]; then
+  echo "Usage: $0 offset length"
+  echo "offset is in assumed negative: offset 3 = DTG -3 hours "
+  exit 1
+else
+  offset=$1
+  length=$2
+
+
+  #
+  # Define forcing files
+  #
+
+  offline_forc_files="Forc_CO2.txt Forc_DIR.txt Forc_DIR_SW.txt Forc_LW.txt Forc_PS.txt Forc_QA.txt Forc_RAIN.txt Forc_SCA_SW.txt Forc_SNOW.txt Forc_TA.txt Forc_WIND.txt Params_config.txt"
+
+  #
+  # Extract current and first guess date
+  #
+
+  FORCING_DTG=$( mandtg $DTG + -$offset )
+  FORCING_YY=$( mandtg -year  $FORCING_DTG )
+  FORCING_MM=$( mandtg -month $FORCING_DTG )
+  FORCING_DD=$( mandtg -day   $FORCING_DTG )
+  FORCING_HH=$( mandtg -hour  $FORCING_DTG )
+  FORCING_HH=$(printf "%.2d" "$FORCING_HH")
+
+  #
+  # Create namelist for physical domain
+  #
+  $BINDIR/domain_prop_grib_api -f $CLIMDIR/m$FORCING_MM -4JB > domain.txt
+  NDLON=`grep NDLON domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  NDLON=$(( $NDLON - $EZONE ))
+  NDLAT=`grep NDGL domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  NDLAT=$(( $NDLAT - $EZONE ))
+  PPDELTAX=`grep PPDELTAX domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  PPDELTAX=$( perl -e 'printf "%d",'$PPDELTAX*1000 )
+  ELONC=`grep ELONC domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELATC=`grep ELATC domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELON0=`grep ELON0 domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELAT0=`grep ELAT0 domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELAT1=`grep ELAT1 domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELON1=`grep ELON1 domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELAT2=`grep ELAT2 domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+  ELON2=`grep ELON2 domain.txt | cut -d"=" -f2  | sed 's/ //g'`
+
+  # When running EKF we should have input files on the same resolution.
+  # When runnng offline surfex with 0 hourd offset we could have different resolution
+  # on the input files
+  if [ "$offset" -eq "0" ]; then
+    interv=$BDINT
+    cat > namelist << EOF
+&naminterp
+  OUTGEO%NLON       = $NDLON,
+  OUTGEO%NLAT       = $NDLAT,
+  OUTGEO%NLEV       = -1,
+  OUTGEO%DLON       = $PPDELTAX,
+  OUTGEO%DLAT       = $PPDELTAX,
+  OUTGEO%POLON      = $ELON0,
+  OUTGEO%POLAT      = $ELAT0,
+  OUTGEO%SOUTH      = $ELAT1,
+  OUTGEO%WEST       = $ELON1,
+  OUTGEO%PROJLON    = $ELON0,
+  OUTGEO%PROJLAT    = $ELAT0,
+  OUTGEO%PROJLAT2   = $ELAT0,
+  OUTGEO%PROJECTION = 3,
+  FORC_INTERV       = $interv,
+  YFORCING_FILETYPE = 'ASCII',
+/
+EOF
+  else
+    # Intervall for EKF at the moment hard-coded to be 1, assuming that HWRITUPTIMES 
+    # write out every hour the first 6 hours
+    interv=1
+    cat > namelist << EOF
+&naminterp
+  FORC_INTERV       = $interv,
+  YFORCING_FILETYPE = 'ASCII',
+/
+EOF
+  fi
+  #
+  # Make the atmospheric forcing data 
+  #
+
+
+  cd $WRK || exit 1
+  [ -d forcing_${FORCING_DTG}_${length} ] || mkdir forcing_${FORCING_DTG}_${length}
+  cat > domain_$DOMAIN.cfg << EOF
+domain
+$NDLON $NDLAT
+"+proj=lcc +lat_0=$ELAT0 +lon_0=$ELON0 +lat_1=$ELAT1 +lat_2=$ELAT0 +no_defs +R=6.371e+06"
+$ELON0 $ELON1 $PPDELTAX
+$ELAT0 $ELAT1 $PPDELTAX
+EOF
+ 
+  if [ "$offset" -eq "0" ]; then
+    # Input from boundary strategy
+    if [ "$HOST_MODEL" == "ifs" ] || [ "$HOST_MODEL" == "hir" ]; then
+      echo "Create forcing is not implemented for ifs and hir boundaries"
+      exit
+    else
+
+##### TODO
+
+      adir=$( ArchDir $ARCHIVE_ROOT $FORCING_YY $FORCING_MM $FORCING_DD $FORCING_HH )
+      FORCING_FA=$( grep "${LLL}|" $adir/bdstrategy | awk '{print substr($3,1)}' ) 
+#####
+    fi
+  else
+    # Offline for EKF. Previous forecast
+    adir=$( ArchDir $ARCHIVE_ROOT $FORCING_YY $FORCING_MM $FORCING_DD $FORCING_HH )
+    FORCING_FA=$adir/ICMSH${CNMEXP}+@LLLL@
+    FORCING_GRIB=$adir/fc@YYYY@@MM@@DD@@HH@+@LLL@grib
+  fi
+  END_FORECAST=`mandtg $FORCING_DTG + $length`
+
+  # Create forcing
+  export PATH=$HM_LIB/util/forcing/bin/:$PATH
+  createForcingDomain.sh forcing_${FORCING_DTG}_${length} $FORCING_DTG $END_FORECAST domain_$DOMAIN.cfg -g -I $FCINT -a -d -f grib -P $FORCING_GRIB
+fi
+
+#-------------------------------
+# tidy up and terminate 
+#------------------------------- 
+
+# Normal exit
+cd ..
+#rm -fr $WDIR
+trap - 0
+ 
+exit 0

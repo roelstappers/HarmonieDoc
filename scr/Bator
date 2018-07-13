@@ -1,0 +1,776 @@
+#!/bin/bash
+#------------------------------------------------------------------
+# This function calls BATODB in a cycle to convert ascii OBSOUL
+# files into ECMA ODB sub-bases. When all the sub-bases are 
+# created SHUFFLE-MERGE is called to create the virtual basis for
+# the sub-bases, i.e. to create a complete ECMA ODB database.
+#------------------------------------------------------------------
+# BATODB requires several input files:
+#     -OBSOUL: ascii observation file 
+#     -LISTE_NOIRE_DIAP:             
+#     -LISTE_LOC:
+#
+# The input directory structure (after the merge): 
+#     ${d_DB}/ECMA/...
+#            /ECMA.${base1}/....
+#            /ECMA.${base2}/....
+#             ...
+#   where the stucture of the virtual basis: 
+#        ECMA->|->ECMA.dd
+#              |->ECMA.sch
+#              |->ECMA.poolmask
+#              |->IOASSIGN
+#
+#   and the structure of the sub-bases:
+#        ECMA.${base}->|->ECMA.dd
+#                      |->ECMA.sch
+#                      |->ECMA.flags
+#                      |->1
+#-------------------------------------------------------                 
+#   Globals: YMD, HH, d_ASSIM, types_BASE, NBPROC
+#-------------------------------------------------------           
+
+
+. header.sh
+. functions.ksh
+
+cd "$WRK"
+WDIR=$(hostname)$$
+Workdir "$WDIR"
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+set -x
+
+## In case of shared workload
+me=${1-1}
+num=${2-1}
+
+ODBTYPE=${3-all}
+ODBBASE=${4-all}
+
+echo "I am number $me out of $num worker(s) for Bator"
+
+# Working directory Bator
+d_BATOR=$WRK/$WDIR
+
+#Input directory for radar data
+RADARTMP=$WRK/radardata
+
+. include.ass
+
+ulimit -S -c unlimited || ulimit -c
+ulimit -S -s unlimited || ulimit -s
+
+crash_flag=0
+
+# Allow for different number of pools in CANARI
+NPOOLS_CANARI=${NPOOLS_CANARI:-$NPOOLS}
+
+#-- get blacklist files
+cp "${HM_LIB}"/nam/LISTE_NOIRE_DIAP . || \
+                { echo "No BLACKLIST to run OULAN!" ; exit 1 ; }
+cp "${HM_LIB}"/nam/LISTE_LOC_${DOMAIN}_${HH} ./LISTE_LOC || \
+cp "${HM_LIB}"/nam/LISTE_LOC ./LISTE_LOC || \
+                { echo "No LOCAL_BLACKLIST to run OULAN!" ; exit 1 ; }
+
+# White list for GPS
+ln -sf "${HM_LIB}"/nam/list.gpssol list_gpssol
+
+tmp=$WRK/foo${me}_$$
+$BINDIR/domain_prop_grib_api $CLIMDIR/m$MM -f -LOW_LEFT > $tmp || exit
+export LON1=$( tail -2 $tmp | head -1 | sed 's/ //g' )
+export LAT1=$( tail -1 $tmp | head -1 | sed 's/ //g' )
+rm -f $tmp
+
+lamflag_namelist () {
+
+
+ # Check which observations to use
+
+ LSYNOP=F
+ LAIREP=F
+ LDRIBU=F
+ LTEMP=F
+ LPILOT=F
+ LPAOB=F
+ LSCATT=F
+ LSATEM=F
+ LSATOB=F
+ LSLIMB=F
+ LRADAR=F
+
+ if [ "$SYNOP_OBS" -eq 1 ] ; then
+    LSYNOP=T
+ fi
+
+ if [ "$AIRCRAFT_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LAIREP=T
+ fi
+
+ if [ "$BUOY_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LDRIBU=T
+ fi
+
+ if [ "$TEMP_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LTEMP=T
+ fi
+
+ if [ "$PILOT_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LPILOT=T
+ fi
+
+ if [ "$AMV_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LSATOB=T
+ fi
+
+ if [ "$AMSUA_OBS" -eq 1 -o "$AMSUB_OBS" -eq 1 -o "$SEVIRI_OBS" -eq 1 -o "$ATMS_OBS" -eq 1 -o "$IASI_OBS" -eq 1 ] ; then
+    if [ "$1" = VAR ]; then
+       LSATEM=T
+    fi
+ fi
+
+ if [ "$PAOB_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LPAOB=T
+ fi
+
+ if [ "$SCATT_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LSCATT=T
+ fi
+ 
+ if [ "$LIMB_OBS" -eq 1 ] ; then
+    LSLIMB=T
+ fi
+
+ if [ "$RADAR_OBS" -eq 1 -a "$1" = VAR ] ; then
+    LRADAR=T
+ fi
+
+# Create namelist
+if [ "$1" = VAR ]; then
+ LVAR=T
+ REDZONE_BATOR=$REDZONE
+elif [ "$1" = CANARI -o "$1" = CANARI_OI_MAIN -o "$1" = CANARI_EKF_SURFEX ]; then
+ LVAR=F
+ REDZONE_BATOR=0.
+else
+ echo "Unknown option in Bator script"
+ exit 1
+fi
+
+cat << EOF > ./NAM_lamflag
+ &NAMFCNT
+   LOBSONLY=.FALSE.,
+ /
+ &NAMFGEOM
+   EFLAT0=$LAT0,
+   EFLON0=$LON0,
+   EFLATC=$LATC,
+   EFLONC=$LONC,
+   EFLAT1=$LAT1,
+   EFLON1=$LON1,
+   EFDELX=$GSIZE,
+   EFDELY=$GSIZE,
+   NFDLUN=1,
+   NFDGUN=1,
+   NFDLUX=$NDLUXG,
+   NFDGUX=$NDGUXG,
+   Z_CANZONE=1500.,
+   REDZONE=$REDZONE_BATOR,
+   LVAR=$LVAR,
+   LNEWGEOM=.TRUE.,
+ /
+ &NAMFOBS
+   LSYNOP=$LSYNOP,
+   LAIREP=$LAIREP,
+   LDRIBU=$LDRIBU,
+   LTEMP=$LTEMP,
+   LPILOT=$LPILOT,
+   LPAOB=$LPAOB,
+   LSCATT=$LSCATT,
+   LSATEM=$LSATEM,
+   LSATOB=$LSATOB,
+   LSLIMB=$LSLIMB,
+   LRADAR=$LRADAR,
+ /
+EOF
+
+cat ./NAM_lamflag
+
+#--- Bator Namelist
+cat << EOF > ./NAMELIST
+ &NADIRS
+   LMFBUFR=.FALSE.,
+   ASCAT_XYGRID=12500.,
+   GPSSOLMETHOD="CENT",
+   NbTempMaxLevels=6000,
+   TempSondOrTraj=.FALSE.,
+   TempSondSplit=.FALSE.,
+   ElimTemp0=.FALSE.,
+   ElimPilot0=.FALSE.,
+   NFREQVERT_TPHR=100,
+   NbMinLevelHr=300,
+   TS_AMSUA(206)%t_select%ChannelsList(:) = -1,
+   TS_AMSUA(206)%t_select%TabFov(:) = -1,
+   TS_AMSUA(206)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUA(207)%t_select%TabFov(:) =  -1,
+   TS_AMSUA(207)%t_select%ChannelsList(:) = -1,
+   TS_AMSUA(207)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUA(209)%t_select%ChannelsList(:) = -1,
+   TS_AMSUA(209)%t_select%TabFov(:) = -1,
+   TS_AMSUA(209)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUA(223)%t_select%ChannelsList(:) = -1,
+   TS_AMSUA(223)%t_select%TabFov(:) = -1,
+   TS_AMSUA(223)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUA(4)%t_select%ChannelsList(:) = -1,
+   TS_AMSUA(4)%t_select%TabFov(:) = -1,
+   TS_AMSUA(4)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUA(3)%t_select%ChannelsList(:) = -1,
+   TS_AMSUA(3)%t_select%TabFov(:) = -1,
+   TS_AMSUA(3)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUA(3)%t_select%SclJump = 0,
+   TS_AMSUA(784)%t_select%TabFov(:) = -1,
+   TS_AMSUA(784)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(206)%t_select%TabFov(:) = -1,
+   TS_AMSUB(206)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(206)%t_select%SclJump = 0,
+   TS_AMSUB(206)%t_satsens%ModSensor = -1,
+   TS_AMSUB(207)%t_select%TabFov(:) = -1,
+   TS_AMSUB(207)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(207)%t_select%SclJump = 0,
+   TS_AMSUB(207)%t_select%ChannelsList(:) = -1,
+   TS_AMSUB(208)%t_select%TabFov(:) = -1,
+   TS_AMSUB(208)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(208)%t_select%SclJump = 0,
+   TS_AMSUB(208)%t_select%ChannelsList(:) = -1,
+   TS_AMSUB(209)%t_select%TabFov(:) = -1,
+   TS_AMSUB(209)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(209)%t_select%SclJump = 0,
+   TS_AMSUB(209)%t_satsens%ModSensor = 4,
+   TS_AMSUB(209)%t_select%ChannelsList(:) = -1,
+   TS_AMSUB(4)%t_select%TabFov(:) = -1,
+   TS_AMSUB(4)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(4)%t_select%SclJump = 0,
+   TS_AMSUB(4)%t_select%ChannelsList(:) = -1,
+   TS_AMSUB(3)%t_select%TabFov(:) = -1,
+   TS_AMSUB(3)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(3)%t_select%SclJump = 0,
+   TS_AMSUB(3)%t_satsens%ModSensor = 15,
+   TS_AMSUB(223)%t_select%TabFov(:) = -1,
+   TS_AMSUB(223)%t_select%TabFovInterlace(:) = -1,
+   TS_AMSUB(223)%t_select%SclJump = 0,
+   TS_AMSUB(223)%t_select%ChannelsList(:) = -1,
+   TS_ATMS(224)%t_select%TabFov(:) = -1,
+   TS_ATMS(224)%t_select%TabFovInterlace(:) = -1,
+   TS_ATMS(224)%t_select%SclJump = 0,
+   TS_ATMS(224)%t_select%ChannelsList(:) = -1,
+   TS_IASI(3)%t_select%TabFov(:) = -1,
+   TS_IASI(3)%t_select%TabFovInterlace(:) = -1,
+   TS_IASI(3)%t_select%SclJump = 0,
+   TS_IASI(3)%t_select%FovInterlace=.TRUE.,
+   TS_IASI(3)%t_select%ChannelsList(:) = -1,
+   TS_IASI(4)%t_select%TabFov(:) = -1,
+   TS_IASI(4)%t_select%TabFovInterlace(:) = -1,
+   TS_IASI(4)%t_select%SclJump = 0,
+   TS_IASI(4)%t_select%FovInterlace=.TRUE.,
+   TS_IASI(4)%t_select%ChannelsList(:) = -1,
+   SIGMAO_COEF(1:18)=18*1.0,
+ /
+ &NAMSCEN
+ /
+ &NAMDYNCORE
+ /
+ &NAMSATFREQ
+ /
+EOF
+
+}
+
+# Check if radar data is available
+if [ "$RADAR_OBS" = 1 ] ; then
+  RADAR=''
+  for F in $( ls -1 "$RADARTMP" ) ; do
+    R=$( echo "$F" | cut -d "_" -f1 ) 
+    echo $RADAR | grep -q "$R" || RADAR="$RADAR $R"
+  done
+  if [ "x$RADAR" = "x" ] ; then
+    echo "Warning: no radar data files found"
+    echo "Warning: switching off radar data"
+    export RADAR_OBS=0
+    types_BASE=$(echo ${types_BASE} | sed 's/ radarv//g')
+  fi
+fi
+
+
+if [ "$ODBBASE" != "all" ] ; then
+  varBASES=${ODBBASE}
+else
+  varBASES=${types_BASE}
+fi
+# Check bufrtables
+Link_bufrtables
+
+nbase=0
+if [[ ( $ODBBASE = all  &&  ( $ANAATMO = 3DVAR || $ANAATMO = 4DVAR )) || $ODBTYPE = VAR ]]; then
+
+  #--- get args
+  typeset d_DB
+  d_DB=$WRK/odb
+  echo "ODB Dir: $d_DB"
+
+  #-- recreate top odb dir
+###  RecreateDir "${d_DB}"
+  [ -d $d_DB ] || mkdir -p $d_DB
+
+  #-- create ECMA ODB sub-bases with batodb
+  for base in ${varBASES}; do
+   if [ $(( nbase % num )) -eq $(( me - 1 )) ]; then
+    echo "-----> Worker $me doing VAR base '$base'"
+    #--- ODB settings for batodb
+    export ODB_CMA=ECMA
+    export ODB_SRCPATH_ECMA=${d_DB}/ECMA.${base}
+    export ODB_DATAPATH_ECMA=${d_DB}/ECMA.${base} 
+    export ODB_ANALYSIS_DATE=${YMD}
+    export ODB_ANALYSIS_TIME=${HH}0000
+    export IOASSIGN=${d_DB}/ECMA.${base}/IOASSIGN
+    export ODB_FEBINPATH=${BINDIR}
+    export BATOR_NBPOOL=${NPOOLS}
+
+    #--- prepare db dir
+    RecreateDir "${d_DB}/ECMA.${base}"   
+    #-- create IOASSIGN file for the given sub-base
+    cd ${d_DB}/ECMA.${base}
+    export ODB_IOASSIGN_MAXPROC=${NPOOLS}
+    if [[ ${BATOR_NBPOOL} -lt 32 ]] || [[ $ODB_IO_METHOD -eq 4 ]] ; then
+      IOBUF=8m
+    else
+      IOBUF=1m
+    fi
+    create_ioassign -l "ECMA" -b ${IOBUF} -n "${BATOR_NBPOOL}" || \
+                { echo "IOASSIGN failed!" ; exit 1 ; }
+
+    echo " "
+    echo "++++++++++++++++++++++++++++++++++++++++++++++++"
+    echo "Directory of ODB description files: $ODB_SRCPATH_ECMA"
+    echo "Directory of Data pools: $ODB_DATAPATH_ECMA"
+    echo "++++++++++++++++++++++++++++++++++++++++++++++++"
+    echo " "
+
+    #-- enter the working dir again
+    cd "${d_BATOR}"
+    #-- rename OBSOUL/BUFR file 
+
+    if [[ $OFORMAT = "OBSOUL" || $OFORMAT = "BUFR" ||  $OFORMAT = "OPLACE"  ]]; then
+      if [[ $USEOBSOUL -eq  1 ]]; then
+        OBSOUL=$WRK/oulan/OBSOUL
+        d1=$( head -1 "$OBSOUL" | awk '{print $1}' )
+        d2=$( head -1 "$OBSOUL" | awk '{print $2}' )
+        d2=$(perl -e "printf('%2.2i', '$d2')")
+        echo "OBSOUL DATE: $d1 $d2" 
+      fi 
+      [[ ! -s refdata ]] || rm -f refdata
+
+      #--- Get the BUFR mapping file
+      cp "${HM_LIB}"/nam/param_bator.cfg ./param.cfg
+  
+      # Conventional observations
+      if [ "$base" = conv ] ; then
+        # SYNOPS
+        if [[ $SYNOP_OBS -eq 1 || $AIRCRAFT_OBS -eq 1 || \
+               $BUOY_OBS -eq 1 || $TEMP_OBS -eq 1     || $PILOT_OBS -eq 1 ]]; then
+      if [[ $USEOBSOUL -eq 1 ]]; then
+          echo "conv     OBSOUL   conv             ${YMD} ${HH}">> refdata
+          ln -sf "$OBSOUL" ./OBSOUL.conv
+      else
+          echo "synop    BUFR     synop            ${YMD} ${HH}">> refdata
+          echo "buoy     BUFR     buoy             ${YMD} ${HH}">> refdata
+          echo "acar     BUFR     acar             ${YMD} ${HH}">> refdata
+          echo "airep    BUFR     airep            ${YMD} ${HH}">> refdata
+          echo "amdar    BUFR     amdar            ${YMD} ${HH}">> refdata
+          echo "temp     BUFR     temp             ${YMD} ${HH}">> refdata
+          echo "temps    BUFR     temp             ${YMD} ${HH}">> refdata
+          echo "pilo     BUFR     profil           ${YMD} ${HH}">> refdata
+#          echo "europ    BUFR     europrofil       ${YMD} ${HH}">> refdata
+          if [[ $GNSS_OBS -eq 1 ]]; then
+            echo "gpssol   BUFR     gpssol           ${YMD} ${HH}">> refdata
+          fi
+          ln -sf "$WRK"/splitObs/synop ./BUFR.synop
+          ln -sf "$WRK"/splitObs/buoy  ./BUFR.buoy
+          ln -sf "$WRK"/splitObs/acars ./BUFR.acar
+          ln -sf "$WRK"/splitObs/amdar ./BUFR.amdar
+          ln -sf "$WRK"/splitObs/airep ./BUFR.airep
+          ln -sf "$WRK"/splitObs/temp  ./BUFR.temp 
+          ln -sf "$WRK"/splitObs/temps ./BUFR.temps
+          ln -sf "$WRK"/splitObs/pilo  ./BUFR.pilo
+          if [[ $GNSS_OBS -eq 1 ]]; then
+            ln -sf "$WRK"/splitObs/gpsso ./BUFR.gpsso
+          fi
+          cp "${HM_LIB}"/nam/param_bator.cfg.conv.${CONV_SOURCE} ./param.cfg
+      fi 
+        fi
+
+        # AMV
+        if [ "$AMV_OBS" -eq 1 ]; then
+          echo "geow     BUFR     geowind          ${YMD} ${HH}">>refdata
+          ln -sf "$WRK"/splitObs/sato7 ./BUFR.geow
+          cat "${HM_LIB}"/nam/param_bator.cfg.geow.${AMV_SOURCE} >> ./param.cfg
+        fi
+
+      # ASCAT observations 
+      elif [ "$base" = ascat ] ; then
+        # Scatterometer
+        if [ "$SCATT_OBS" -eq 1 ]; then
+          echo "ascat    BUFR     ascat            ${YMD} ${HH}">>refdata
+          #ln -sf "$WRK"/splitObs/ascat ./BUFR.ascat
+          cp "${HM_LIB}"/nam/param_bator.cfg ./param.cfg
+          ln -sf $OBDIR/ascat$DTG ./BUFR.ascat
+        fi
+      elif [ "$base" = sevb ] ; then
+       # Seviri                                                                                                                     
+       if [ "$SEVIRI_OBS" -eq 1 ]; then
+          echo "Put your local data here"
+          exit 1
+          echo "sev      GRIB     sevb             ${YMD} ${HH}">>refdata
+          ln -sf SOME_PATH/SOME_FILE.grib ./GRIB.sevb
+        fi
+      elif [ "$base" = gpsro  ] ; then
+        # GPS-RO
+        if [ "$LIMB_OBS" -eq 1 ]; then
+          echo "gpsro    BUFR     gpsro            ${YMD} ${HH}">>refdata
+          ln -sf "$WRK"/splitObs/gpsro ./BUFR.gpsro
+          cp "${HM_LIB}"/nam/param_bator.cfg.gpsro ./param.cfg
+        fi
+      # AMSU-A observations
+      elif [ "$base" = amsua ] ; then
+        # AMSU-A
+        if [ "$AMSUA_OBS" -eq 1 ]; then
+          echo "amsua    BUFR     amsua            ${YMD} ${HH}">>refdata
+          cp "${HM_LIB}"/nam/param_bator.cfg.amsua."${ATOVS_SOURCE}" ./param.cfg
+          if [ "$ATOVS_SOURCE" = mars ] ; then
+            ln -sf "$WRK"/splitObs/amsua ./BUFR.amsua
+          else
+            ln -sf $OBDIR/amsua$DTG ./BUFR.amsua
+          fi
+        fi
+      elif [ "$base" = amsub ] ; then
+        # AMSU-B
+        if [ "$AMSUB_OBS" -eq 1 ]; then
+          echo "amsub    BUFR     amsub            ${YMD} ${HH}">>refdata
+          cp "${HM_LIB}"/nam/param_bator.cfg.amsub."${ATOVS_SOURCE}" ./param.cfg
+          if [ "$ATOVS_SOURCE" = mars ] ; then
+            ln -sf "$WRK"/splitObs/amsub ./BUFR.amsub
+          else
+            ln -sf $OBDIR/amsub$DTG ./BUFR.amsub
+          fi
+        fi
+      elif [ $base = "atms" ] ; then
+        # ATMS
+        if [ $ATMS_OBS -eq 1 ]; then
+          echo "atms     BUFR     atms             ${YMD} ${HH}">>refdata
+          ln -sf $WRK/splitObs/atms ./BUFR.atms
+          cp ${HM_LIB}/nam/param_bator.cfg.atms ./param.cfg
+        fi
+      # IASI
+      elif [ "$base" = iasi  ] ; then
+        if [ "$IASI_OBS" -eq 1 ]; then
+          echo "iasi     BUFR     iasi             ${YMD} ${HH}">>refdata
+          cp "${HM_LIB}"/nam/param_bator.cfg."${IASI_SOURCE}" ./param.cfg
+          ln -sf "${HM_SAT_CONST}"/iasichannels ./iasichannels
+          if [ "$IASI_SOURCE" = mars ] ; then
+            ln -sf "$WRK"/splitObs/iasi ./BUFR.iasi
+          else
+            ln -sf $OBDIR/iasi$DTG ./BUFR.iasi
+          fi
+        fi
+      elif [ "$base" = radarv  ] ; then
+        if [ "$RADAR_OBS" -eq 1 ]; then
+          cp "${HM_LIB}"/nam/param_bator.cfg.radarv ./param.cfg
+          echo -e "\n\n\n Radar\n\n\n"
+          for R in $RADAR ; do
+            FV=$( find "$RADARTMP" -name "*${R}_vr.bfr" ) 
+            FR=$( find "$RADARTMP" -name "*${R}_zh.bfr" ) 
+            H5V=$( find "$RADARTMP" -name "*${R}_vr.h5" )  
+            H5R=$( find "$RADARTMP" -name "*${R}_zh.h5" )  
+            echo "Checking for $FV"
+            if [ -e "$FV" ]; then
+              echo "${R}vr  BUFR     radarv           ${YMD} ${HH}">>refdata
+              cat refdata
+              ln -sf "$FV" ./BUFR."${R}"vr
+            fi
+            echo "Checking for $FR"
+            if [ -e "$FR" ]; then
+              echo "${R}zh  BUFR     radarv           ${YMD} ${HH}">>refdata
+              cat refdata
+              ln -sf "$FR" ./BUFR."${R}"zh
+            fi
+            echo "Checking for $H5VR" 
+            if [ -e "$H5V" ]; then 
+              echo "${R}vr  HDF5     radarv           ${YMD} ${HH}">>refdata 
+              cat refdata 
+              ln -sf "$H5V" ./HDF5."${R}"vr
+            fi 
+            echo "Checking for $H5R" 
+            if [ -e "$H5R" ]; then 
+              echo "${R}zh  HDF5     radarv           ${YMD} ${HH}">>refdata 
+              cat refdata 
+              ln -sf "$H5R" ./HDF5."${R}"zh
+            fi 
+          done
+        else
+          echo -e "\n\n\n No radar\n\n\n"
+        fi #RADAR_OBS
+      fi
+    else
+      echo "Obs format not valid!"
+      exit 1
+    fi
+
+    # Time-slot for 3D-Var
+    if [ "$ANAATMO" = 3DVAR ]; then
+      export BATOR_NBSLOT=1
+      dat=${YMD}${HH}
+      echo "$(mandtg "${dat}" + -"${HHTMP2}")${MINTMP}00"  > ficdate
+      echo "$(mandtg "${dat}" +  "${HHTMP}")${MINTMP}00" >> ficdate
+    fi
+
+    # Time-slots for 4D-Var
+    if [ "$ANAATMO" = 4DVAR ]; then
+      export BATOR_NBSLOT=6
+      dat=${YMD}${HH}
+      case $FCINT in
+       06|6)
+        echo "$(mandtg "${dat}" + -3)0000"  > ficdate
+        echo "$(mandtg "${dat}" + -3)3000" >> ficdate
+        echo "$(mandtg "${dat}" + -2)3000" >> ficdate
+        echo "$(mandtg "${dat}" + -1)3000" >> ficdate
+        echo "$(mandtg "${dat}" +  0)3000" >> ficdate
+        echo "$(mandtg "${dat}" +  1)3000" >> ficdate
+        echo "$(mandtg "${dat}" +  2)3000" >> ficdate
+        ;;
+       03|3)
+        echo "$(mandtg "${dat}" + -1)0000"  > ficdate
+        echo "$(mandtg "${dat}" + -1)2000" >> ficdate
+        echo "$(mandtg "${dat}" + -1)4000" >> ficdate
+        echo "$(mandtg "${dat}" + -0)0000" >> ficdate
+        echo "$(mandtg "${dat}" +  0)2000" >> ficdate
+        echo "$(mandtg "${dat}" +  0)4000" >> ficdate
+        echo "$(mandtg "${dat}" +  1)0000" >> ficdate
+        ;;
+       01|1)
+        echo "$(mandtg "${dat}" + -1)2500"  > ficdate
+        echo "$(mandtg "${dat}" + -1)4000" >> ficdate
+        echo "$(mandtg "${dat}" + -1)5000" >> ficdate
+        echo "$(mandtg "${dat}" + -0)0000" >> ficdate
+        echo "$(mandtg "${dat}" +  0)1000" >> ficdate
+        echo "$(mandtg "${dat}" +  1)2000" >> ficdate
+        echo "$(mandtg "${dat}" +  1)3500" >> ficdate
+        ;;
+       *)
+        echo "No handling for $FCINT in 4DVAR"
+        exit 1
+        ;;
+      esac
+    fi
+
+    #--- get Namelist
+    lamflag_namelist VAR
+
+    if [ "$ODB_VERBOSE_OUT" -eq 1 ];then
+      export ODB_TRACE_PROC=-1
+      export ODB_TRACE_FILE=${d_BATOR}/trace.%d
+      export ODB_TRACE_FLUSH_FREQ=1
+      export DR_HOOK=1
+    fi
+
+    if [ "$RUNNING_MODE" == operational ] ; then
+       $MPPEXEC "$BINDIR"/BATOR > log"${YMD}${HH}"_var.dat || \
+          { crash_flag=1; [ -s "$WRK"/var_oper.dat ] && rm -f "$WRK"/var_oper.dat; echo "BATODB for var failed!" > "$WRK"/var_oper.dat ; }
+    else
+       $MPPEXEC "$BINDIR"/BATOR > log"${YMD}${HH}"_var.dat || { echo "BATODB failed!" ; exit 1 ; }
+    fi
+
+    [[ -s drhook.prof.1 ]] && { tar cvf "${TASK}"_prof.tar drhook.prof.* ; mv "${TASK}"_prof.tar "$ARCHIVE" ; }
+
+    Cat_logs log"${YMD}${HH}"_var.dat
+
+    if [ "$RUNNING_MODE" == operational -a "$base" == conv -a $crash_flag -lt 1 ] ; then
+       # Check if we have enough conventional observations
+       Check_avail_obs "${YMD}${HH}" var "$NPOOLS"
+    fi
+
+    rm -f ficdate
+   fi
+   nbase=$(( nbase + 1 ))
+  done
+
+  if [ "$BATOR_LAMFLAG" -ne 1 ];then
+    echo " "
+    echo "****************** ABORT ******************"
+    echo "    Standalone LAMFLAG is obsolete and     "
+    echo "       it is not supported anymore.        "
+    echo "          The script will exit!!!!         " 
+    echo "*******************************************"
+    echo " "
+    exit 1
+  fi
+fi
+
+if [ "$ODBBASE" != "all" ] ; then
+  canBASES=${ODBBASE}
+else
+  canBASES=${types_BASE_can}
+fi
+
+if [[ ( $ODBBASE = all  &&  "$ANASURF" != "none" ) || $ODBTYPE = CAN ]]; then
+  # First AnSFC for 4DVAR when ANASURF_MODE=before or after is FCINT/2 before DTG
+  start_4dv=$(( FCINT / 2 ))
+  if [ "$ANAATMO" = "4DVAR" -a "$ANASURF_MODE" = "before" ]; then
+    NANAS="$start_4dv"
+  elif [ "$ANAATMO" = "4DVAR" -a "$ANASURF_MODE" = "both" ]; then
+    NANAS="$start_4dv  0"
+  else
+    NANAS="0"
+  fi
+
+  for AnSFC_TIME in $NANAS; do
+    #--- get args
+    typeset d_DB
+    OBSOUL=$WRK/oulan/OBSOUL
+    if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE" == "both" -a "$AnSFC_TIME" -eq "$start_4dv" ]; then
+      d_DB=$WRK/odb_can_ori2
+    else
+      d_DB=$WRK/odb_can_ori
+    fi
+    echo "ODB Dir: $d_DB"
+
+    #-- recreate top odb dir
+    echo d_DB "$d_DB"
+###    RecreateDir "${d_DB}"
+    [ -d $d_DB ] || mkdir -p $d_DB
+
+    #-- create ECMA ODB sub-bases with batodb
+    for base in ${canBASES}; do
+     if [ $(( nbase % num )) -eq $(( me - 1 )) ]; then
+      echo "-----> Worker $me doing CAN base '$base'"
+      #--- ODB settings for batodb
+      export BATOR_NBSLOT=1
+      export ODB_CMA=ECMA
+      export ODB_SRCPATH_ECMA=${d_DB}/ECMA.${base}
+      export ODB_DATAPATH_ECMA=${d_DB}/ECMA.${base}
+      if [ "$ANAATMO" == "4DVAR" -a "$AnSFC_TIME" -eq "$start_4dv" ]; then 
+        dat=${YMD}${HH}
+        dat=$(mandtg "${dat}" + -$AnSFC_TIME)
+        export ODB_ANALYSIS_DATE=$(echo "$dat" | cut -c1-8)
+        export ODB_ANALYSIS_TIME=$(echo "$dat" | cut -c9-10)0000
+
+        d1=$( head -1 "$OBSOUL" | awk '{print $1}' )
+        d2=$( head -1 "$OBSOUL" | awk '{print $2}' )
+        # d2 must have default format because of substitution
+
+        d1_new=$ODB_ANALYSIS_DATE
+        d2_new=$(echo "$dat" | cut -c9-10)
+        cat $OBSOUL | perl -pe "s/^(\s+)$d1(\s+)$d2\$/\${1}$d1_new\${2}$d2_new/ if ( \$. == 1 )" >  "$WRK"/oulan/OBSOUL2
+        OBSOUL=$WRK/oulan/OBSOUL2
+      else
+        export ODB_ANALYSIS_DATE=${YMD}
+        export ODB_ANALYSIS_TIME=${HH}0000
+      fi
+      export IOASSIGN=${d_DB}/ECMA.${base}/IOASSIGN
+      export ODB_FEBINPATH=${BINDIR}
+      export BATOR_NBPOOL=${NPOOLS_CANARI}
+
+      #--- prepare db dir
+      RecreateDir "${d_DB}/ECMA.${base}"   
+      #-- create IOASSIGN file for the given sub-base
+      cd ${d_DB}/ECMA.${base}
+      export ODB_IOASSIGN_MAXPROC=${NPOOLS_CANARI}
+      if [[ ${BATOR_NBPOOL} -lt 32 ]] || [[ $ODB_IO_METHOD -eq 4 ]] ; then
+        IOBUF=8m
+      else
+        IOBUF=1m
+      fi
+      create_ioassign -l "ECMA" -b 8m -n "${BATOR_NBPOOL}" || \
+                { echo "IOASSIGN failed!" ; exit 1 ; }
+
+      echo " "
+      echo "++++++++++++++++++++++++++++++++++++++++++++++++"
+      echo "Directory of ODB description files: $ODB_SRCPATH_ECMA"
+      echo "Directory of Data pools: $ODB_DATAPATH_ECMA"
+      echo "++++++++++++++++++++++++++++++++++++++++++++++++"
+      echo " "
+
+      #-- enter the working dir again
+      cd "${d_BATOR}"
+      #-- rename OBSOUL/BUFR file 
+      if [[ "$OFORMAT" = OBSOUL || "$OFORMAT" = BUFR || "$OFORMAT" = OPLACE ]]; then
+        if [[ $USEOBSOUL -eq 1 ]]; then
+          d1=$( head -1 "$OBSOUL" | awk '{print $1}' )
+          d2=$( head -1 "$OBSOUL" | awk '{print $2}' )
+          d2=$(perl -e "printf('%2.2i', '$d2')")
+          echo "OBSOUL DATE: $d1 $d2" 
+        fi
+        [[ ! -s refdata ]] || rm -f refdata
+        if [[ $SYNOP_OBS -eq 1 || $AIRCRAFT_OBS -eq 1 || \
+              $BUOY_OBS -eq 1  || $TEMP_OBS -eq 1     || \
+              $PILOT_OBS -eq 1 ]] ; then
+
+        if [[ $USEOBSOUL -eq 1 ]]; then
+          echo "conv     OBSOUL   conv             ${YMD} ${HH}">> refdata
+          ln -sf "$OBSOUL" ./OBSOUL.conv
+          #--- Get the BUFR mapping file
+          cp "${HM_LIB}"/nam/param_bator.cfg ./param.cfg
+        else
+          echo "synop    BUFR     synop            ${YMD} ${HH}">> refdata
+          ln -sf "$WRK"/splitObs/synop ./BUFR.synop
+          cp "${HM_LIB}"/nam/param_bator.cfg.conv.${CONV_SOURCE} ./param.cfg
+        fi
+        fi
+      else
+        echo "Obs format not valid!"
+        exit 1
+      fi
+
+      dat=${YMD}${HH}
+      dat=$(mandtg "${dat}" + -$AnSFC_TIME)
+      echo "$(mandtg "${dat}" + -1)3000"  > ficdate
+      echo "$(mandtg "${dat}" +  0)3000" >> ficdate
+
+      #--- get Namelist
+      lamflag_namelist "$ANASURF"
+
+      #--- ODB Debug
+      if [ "$ODB_VERBOSE_OUT" -eq 1 ];then
+        export ODB_TRACE_PROC=-1
+        export ODB_TRACE_FILE=${d_BATOR}/trace.%d
+        export ODB_TRACE_FLUSH_FREQ=1
+        export DR_HOOK=1
+      fi
+
+      if [ "$RUNNING_MODE" == operational ]; then
+         $MPPEXEC "$BINDIR"/BATOR > log"${YMD}${HH}"_can.dat || \
+            { crash_flag=1; [ -s "$WRK"/can_oper.dat ] &&  rm -f "$WRK"/can_oper.dat; echo "BATODB for $ANASURF failed!" > "$WRK"/can_oper.dat ; }
+      else
+         $MPPEXEC "$BINDIR"/BATOR > log"${YMD}${HH}"_can.dat || { echo "BATODB for $ANASURF failed!" ; exit 1 ; }
+      fi
+
+
+      Cat_logs log"${YMD}${HH}"_can.dat
+
+      [[ -s drhook.prof.1 ]] && { tar cvf "${TASK}"_canari_prof.tar drhook.prof.* ; mv "${TASK}"_canari_prof.tar "$ARCHIVE" ; }
+
+      if [ "$RUNNING_MODE" == operational -a $crash_flag -lt 1 ] ; then
+         # Check if we have enough observations
+         Check_avail_obs "${YMD}${HH}" can "$NPOOLS_CANARI"
+      fi
+
+     fi
+     nbase=$(( nbase + 1 ))
+    done
+  done
+fi 
+
+# Normal exit
+cd ..
+rm -fr "$WDIR"
+trap - 0
+exit

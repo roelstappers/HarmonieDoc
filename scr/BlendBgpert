@@ -1,0 +1,110 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#
+# Blending of different files
+# FILE1: File which from we should take main model state
+# FILE2: File which from we should take cloud fields, TKE, ...
+# FILE3: OUTPUTFILE
+
+NBGVECS=4
+echo "NBGVECS=$NBGVECS"
+
+ mbr=1
+ if [ ${NBGVECS} -gt 0 ]; then
+  while [ ${mbr} -le ${NBGVECS} ]; do
+      mmm=`perl -e "printf \"%03d\",$mbr"`
+
+       # Get the input
+      ln -s $ARCHIVE/../mbr$mmm/MXMIN1999+0000 FILE1
+      echo "FILE1 $ARCHIVE/../mbr$mmm/MXMIN1999+0000"
+      ln -s ${WRK}/../mbr${mmm}/very_first_guess FILE2
+      echo "FILE2  ${WRK}/../mbr${mmm}/very_first_guess" 
+      cp    $ARCHIVE/../mbr$mmm/MXMIN1999+0000 FILE3
+
+
+
+# TKE settings
+if [ $PHYSICS = alaro ] ; then
+   L_TKE=F
+else
+   L_TKE=T
+fi
+
+# Copy NH fields 
+if [ $DYNAMICS = nh ] ; then
+   L_SPEC_NH=T
+else
+   L_SPEC_NH=F
+fi
+
+# AROME cloud variables
+if [ $PHYSICS = arome ] ; then
+   LAROME=T
+   LOPEZ=F
+else
+   LAROME=F
+   LOPEZ=T
+fi
+
+cat > fort.4 <<EOF
+&NAMBLEND
+   Z_NSIGN=0.,
+   CLFNAME(1)='FILE1',
+   CLFNAME(2)='FILE2', 
+   CLFNAME(3)='FILE3',
+   L_HYDRO=.FALSE., 
+   L_LOPEZ=$LOPEZ,
+   L_AROME=$LAROME,
+   L_TKE=$L_TKE,
+   L_Q=.FALSE.,
+   L_NH=$L_SPEC_NH,
+/
+&NAMDYNCORE
+/ 
+&NAMSCEN
+/
+EOF
+
+export DR_HOOK_NOT_MPI=1
+
+echo "start BLEND mbr$mmm"
+
+$MPPGL $BINDIR/BLEND 
+
+echo "finish BLEND mbr$mmm"
+
+mv FILE3 $ARCHIVE/../mbr$mmm/ANAB1999+0000 
+echo "FILE3 $ARCHIVE/../mbr$mmm/ANAB1999+0000"
+
+rm -rf $WRK/../mbr$mmm/first_guess
+rm -rf $WRK/../mbr$mmm/fc_start
+
+ln -sf $ARCHIVE/../mbr$mmm/ANAB1999+0000 $WRK/../mbr$mmm/first_guess
+echo "first guess $WRK/../mbr$mmm/first_guess"
+ln -sf $ARCHIVE/../mbr$mmm/ANAB1999+0000 $WRK/../mbr$mmm/fc_start
+echo "fc_start $WRK/../mbr$mmm/fc_start"
+
+ mbr=`expr $mbr + 1`
+rm -rf FILE1
+rm -rf FILE2
+
+done
+fi
+
+
+
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+#  ODB tables definition for using in create_ioassign
+#	
+#	CYCLE 38
+#
+
+  tables="aeolus_1b aeolus_2b aeolus_auxmet aeolus_hdr aeolus_hdr_cal"
+  tables="$tables atovs atovs_pred atovs_body body bufr bufr_tables bufr_tables_desc"
+  tables="$tables ddrs desc errstat hdr index poolmask resat"
+  tables="$tables rtovs rtovs_body rtovs_mlev rtovs_pred rtovs_slev"
+  tables="$tables sat satem satob scatt scatt_body smos"
+  tables="$tables ssmi ssmi_body ssmi_mlev ssmi_slev"
+  tables="$tables timeslot_index update limb resat_averaging_kernel"
+  tables="$tables radar radar_body radar_station"
+  tables="$tables modsurf radiance allsky co2_sink cloud_sink collocated_imager_information"
+  tables="$tables auxiliary auxiliary_body radiance_body allsky_body gnssro gnssro_body gbrad gbrad_body"
+  tables="$tables conv conv_body"
+  tables="$tables update_1 update_2 update_3 update_4 update_5 update_6 update_7 update_8 update_9 update_10"

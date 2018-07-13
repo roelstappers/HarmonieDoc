@@ -1,0 +1,153 @@
+#!/bin/bash
+### script to create (NMC) forecast differences ####
+### the model is called to do the job 
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+DTG_START=$DTG
+DTG_END=$DTG
+INT_HH=12
+FC_LEN=06
+NMEM=${ENSSIZE-4}
+NMEM1=$(( $NMEM -1 ))
+
+ln -sf $HM_LIB/const/rrtm_const/* .
+
+NN=0
+FILES=""
+DATE=$DTG_START
+
+LCLOUDFRACTI=${LCLOUDFRACTI-.FALSE.}
+ICLOUDFRACTI=${ICLOUDFRACTI-"-1"}
+ITKE=${ITKE-"-1"}
+
+# Forecast settings shared between Forecast, Femars and 4DV[screen|minim|traj]
+. ${HM_LIB}/scr/forecast_model_settings.sh
+
+## selective namelists
+NFPOS=0
+NPOSTS=0
+if [ "$POSTP" = inline ]; then
+  NFPOS=1
+  NPOSTS=$( perl -S Output_freq.pl NPOSTS )
+fi
+NCONF=001               # IFS configuration
+LL1=06
+LSLAG=".TRUE."          # SL Advection
+NFOST=6                 # Setings for Linear/Quadratic grid
+GRID_TYPE_LCQ=".FALSE." # Switch  to enable quadratic grid computations
+case $GRID_TYPE in
+  "LINEAR" )
+;;
+  "QUADRATIC" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+  "CUBIC" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+*)
+  echo "Wrong grid type"$GRID_TYPE
+  exit 1
+;;
+esac
+
+#  Get namelist name
+NAMELIST=$WRK/$WDIR/namelist_femars
+Get_namelist femars $NAMELIST
+CCEXP=STAT
+
+sed -e "s/NBPROC/$NPROC/g" \
+    -e "s/NPROCX/$NPROCX/g" \
+    -e "s/NPROCY/$NPROCY/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    -e "s/NCONF=NCONF/NCONF=$NCONF/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"$CCEXP\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h$LL1\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=$LSLAG/g" \
+    -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+    -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+    -e "s/ITKE/$ITKE/g" \
+    -e "s/LSPBDC=.FALSE./LSPBDC=${lspbdc}/g" \
+    -e "s/NFOST=0/NFOST=$NFOST/g" \
+    $NAMELIST > fort.4
+
+while [ $DATE -le $DTG_END ];do
+				
+ #--- some cleaning
+set +e
+if [ -f NODE.001_01 ];then
+ rm -f core
+ rm -f ICMSH${CNMEXP}* PF${CNMEXP}LALO*
+ rm -f NODE* SCR*
+ rm -f ncf927 ECHALAD
+ rm -f err.* out.* 
+ rm -f ICMSHSTAT* ELSCFSTAT*
+fi
+set -e
+
+
+ #--- get the input files
+ F4=`perl -e "printf('%4.4i', '$FC_LEN')"`
+ INFILE=ICMSH${CNMEXP}+$F4
+
+ I=1
+ while [ $I -le $NMEM ] ; do
+  II=$(( $I - 1 ))
+  I3=`perl -e "printf('%3.3i', '$I')"`
+  II3=`perl -e "printf('%3.3i', '$II')"`
+  ln -s $ARCHIVE/mbr$I3/$INFILE ELSCFSTATALBC$II3
+  I=$(( $I + 1 ))
+
+ done
+
+ M=1
+ while [ $M -le $NMEM ] ; do
+   MM=$(( $M - 1 ))
+   N=$(( $MM + 1 ))
+   [[ $N -gt $NMEM1 ]] && N=1
+
+    ln -sf ELSCFSTATALBC00$MM ICMSHSTATINIT
+    ln -sf ELSCFSTATALBC00$MM ICMSHSTATFGIN
+    ln -sf ELSCFSTATALBC00$N ICMSHSTATANIN
+
+    NN=$(( $NN + 1 ))
+    NNN=`perl -e "printf('%3.3i', '$NN')"`
+
+   $MPPEXEC $BINDIR/MASTERODB -t1. -maladin -eSTAT -fh0 -asli -c001 -vmeteo || exit
+
+   mv gribdiff $ARCHIVE/ensdiff_${DATE}_${F4}_$NNN || exit
+   FILES="$FILES ensdiff_${DATE}_${F4}_$NNN"
+   [[ -s fort.95 ]] && { mv fort.95 $ARCHIVE/raw_ensdiff_${DATE}_${F4}_$NNN ; \
+      FILES="$FILES raw_ensdiff_${DATE}_${F4}_$NNN" ; }
+
+   M=$(( $M + 1 ))
+
+ done
+
+ DATE=`mandtg ${DATE} + ${INT_HH}`
+
+done
+
+
+# Archive data on ECFS ( or similar )
+if [ "$HM_EXP" ] ; then
+  Access_lpfs -mkdir $HM_EXP/femars
+  for F in $FILES ; do
+    Access_lpfs -to $ARCHIVE/$F $HM_EXP/femars/$F || exit
+  done
+fi
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

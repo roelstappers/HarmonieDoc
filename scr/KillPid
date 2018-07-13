@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# Script to kill a process and all its children, recursively
+# Ole Vignes, 26.04.2012
+
+
+if [ $# -eq 0 -o $# -gt 2 ]; then
+   echo "Usage: $(basename $0) <pid> [signal]"
+   exit 1
+fi
+
+kill_recursive() {
+   local pid=$1
+   local sig=${2-TERM}
+   for child in $(ps -o pid,ppid -u $USER | awk '$2 == '$pid' {print $1}'); do
+      kill_recursive $child $sig
+   done
+   [ ${DEBUG-0} -gt 2 ] && echo "Running: kill -$sig $pid"
+   kill -$sig $pid
+}
+
+kill_recursive $*

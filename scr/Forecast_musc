@@ -1,0 +1,113 @@
+#!/bin/bash
+
+#
+# First MUSC forecast script template
+# This version is for technical validation only
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+NRAZTSLIST=$( perl -S Output_freq.pl NRAZTS )
+WRITELIST="-7,0,-1,-2,-3,-4,-5,-6,"
+WRITESLIST="-7,0,-1,-2,-3,-4,-5,-6,"
+N1SFXHIS=1
+
+# Forecast settings shared between Forecast and 4DV[screen|minim|traj]
+. forecast_model_settings.sh
+
+
+# Link RRTM files
+ln -s $HM_LIB/const/rrtm_const/* .
+
+# Surfex output format
+if [ $SURFEX_OUTPUT_FORMAT == "lfi" ] ; then
+  echo "Not supported"
+  exit 1
+  LFMWRIT=.TRUE.
+  LFMREAD=.TRUE.
+  LFAPGD=.FALSE.
+else
+  LFMWRIT=.FALSE.
+  LFMREAD=.FALSE.
+  LFAPGD=.TRUE.
+fi
+
+#  Get namelist name
+POSTP="none"
+NPOSTS=""
+NAMELIST=$WRK/$WDIR/namelist_forecast
+Get_namelist forecast $NAMELIST
+
+sed -e "s/BDINT/$LBDINT/" \
+    -e "s/LLINC/.TRUE./" \
+    -e "s/WRITESLIST/$WRITESLIST/" \
+    -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=$N1SFXHIS/g" \
+    -e "s/WRITELIST/$WRITELIST/" \
+    -e "s/NRAZTSLIST/$NRAZTSLIST/" \
+    -e "s/ZNEN1/$ZNEN1/g" \
+    -e "s/ZNEN2/$ZNEN2/g" \
+    -e "s/ZNEK0/$ZNEK0/g" \
+    -e "s/ZNEK1/$ZNEK1/g" \
+    -e "s/ZNRADFR/$ZNRADFR/g" \
+    -e "s/NBPROC/1/g" \
+    -e "s/NPROCX/1/g" \
+    -e "s/NPROCY/1/g" \
+    -e "s/NPOSTS=NPOSTS/NPOSTS=$NPOSTS/g" \
+    -e "s/NFPOS=NFPOS/NFPOS=0/g" \
+    -e "s/=LFMWRIT/=$LFMWRIT/g" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/NCONF=NCONF/NCONF=001/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"MUSC\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h$LL\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    -e "s/ICLOUDFRACTI/-1/g" \
+    -e "s/LCLOUDFRACTI/.FALSE./g" \
+    -e "s/ITKE/1/g" \
+    $NAMELIST > fort.4
+
+Cat_logs fort.4
+ln -sf $WRK/MUSC.atm.ascii.fa   ICMSHMUSCINIT
+
+if [ $SURFACE = "surfex" ] ; then
+
+ #
+ # Setup SURFEX namelist and input file if applicable
+ #
+
+ # Copy namelist
+ NAMELIST=$WRK/$WDIR/namelist_forecast_sfx
+ Get_namelist sfx_forecast $NAMELIST
+
+# Hard code LPERSURF to be .FALSE.
+  lpertsurf=.FALSE.
+  sed -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+      -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+  "$NAMELIST" > EXSEG1.nam
+
+ Cat_logs EXSEG1.nam
+ ln -sf $WRK/MUSC.sfx.ascii.fa            ICMSHMUSCINIT.sfx
+ ln -sf $WRK/MUSC_Const.Clim.sfx.ascii.fa Const.Clim.sfx
+ ln -sf $CLIMDIR/*.bin . || exit 1
+
+fi
+
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE* OUTPUT_LISTING
+
+mv ICMSH* *.lfa $ARCHIVE/.
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

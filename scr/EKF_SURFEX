@@ -1,0 +1,167 @@
+#!/bin/bash
+
+#
+# EKF SURFEX 
+#
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+
+#
+# Extract current and first guess date
+#
+
+YY=$( mandtg -year  $DTG )
+MM=$( mandtg -month $DTG )
+DD=$( mandtg -day   $DTG )
+HH=$( mandtg -hour  $DTG )
+HH=$(printf "%.2d" "$HH")
+
+FGDTG=$( mandtg $DTG + -$FCINT )
+FGYY=$( mandtg -year  $FGDTG )
+FGMM=$( mandtg -month $FGDTG )
+FGDD=$( mandtg -day   $FGDTG )
+FGHH=$( mandtg -hour  $FGDTG )
+FGHH=$(printf "%.2d" "$FGHH")
+
+log="LISTING_SODA.txt"
+
+# Link Ecoclimap cover files
+ln -sf $CLIMDIR/*.bin .
+
+# Turn off MPI initialization in Dr.Hook
+export DR_HOOK_NOT_MPI=1
+
+# Find the number of control variables
+INCVARS=`echo $INCV | sed -e 's/,/ /g'`
+EKF_NPERT=0
+for INCVAR in $INCVARS; do
+  [ "$INCVAR" -eq "1" ] && EKF_NPERT=$(( $EKF_NPERT + 1 ))
+done
+
+# Fetch first_guess and result from CANARI
+ln -s $WRK/first_guess          FG_OI_MAIN
+ln -s $WRK/CANARI               CANARI
+
+# Climate file
+MM=$( mandtg -month $DTG )
+ln -s $CLIMDIR/m$MM clim_isba
+ln -s $CLIMDIR/PGD.lfi PGD.lfi
+ln -s $CLIMDIR/Const.Clim.sfx Const.Clim.sfx
+
+#--- ECMWF SST and SIC interpolated to model domain
+if [ "$HOST_MODEL" == "ifs" ] ; then
+  LECSST=.TRUE.
+  ln -sf  $WRK/ECMWF_CANARI_SST_SIC SST_SIC
+  [[ -f ./SST_SIC ]] || { echo "No ECMWF SST and SIC found" ; exit 1 ; }
+else
+  LECSST=.FALSE.
+  ln -sf $WRK/ELSCFHARMALBC000 SST_SIC
+fi
+
+# Copy the first guess for analysis to working directory
+if [ "$SURFEX_OUTPUT_FORMAT" == "fa" ]; then
+  conv sfxfa2lfi $WRK/very_first_guess_sfx PREP.lfi
+else
+  cp -f $WRK/very_first_guess_sfx PREP.lfi
+fi
+cp $ARCHIVE/PREP_EKF_PERT?.lfi .
+
+# Get namelist
+if [ $PHYSICS = "arome" ] ; then
+   LAROME=.TRUE.
+else
+   LAROME=.FALSE.
+fi
+
+# Snow analysis from CANARI updated in OI_MAIN 
+LAESNM=.TRUE.
+
+# Link in background
+for f in `ls -1 $ARCHIVE/BGROUNDout_ASSIM.*`; do
+  cpu=`echo $f | awk -F. '{ print $NF }'`
+  ln -sf $f BGROUNDin.${cpu}
+done
+
+#
+# VARASSIM - soil analysis
+#
+
+# Get and modify the namelist
+NAMELIST=$WRK/namelist_sfx_ekf_main
+Get_namelist sfx_ekf_main $NAMELIST
+# Hard code LPERSURF to be .FALSE.
+lpertsurf=.FALSE.
+
+CSURF_FILETYPE="LFI   "
+sed -e "s/IVAR=VV/IVAR=1/" \
+    -e "s/NVAR=NV/NVAR=$EKF_NPERT/" \
+    -e "s/LSIM=LSIM/LSIM=.FALSE./" \
+    -e "s/LPRT=LPRT/LPRT=.FALSE./" \
+    -e "s/LBFIXED=LBFIXED/LBFIXED=.FALSE./" \
+    -e "s/LBEV=LBEV/LBEV=.TRUE./" \
+    -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+    -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+    -e "s/INCV=INCV/INCV=$INCV/" \
+    -e "s/INCO=INCO/INCO=$INCO/" \
+    -e "s/=LAROME/=$LAROME/" \
+    -e "s/=LECSST/=$LECSST/" \
+    -e "s/=LAESNM/=$LAESNM/" \
+    -e "s/=CSURF_FILETYPE/=\"$CSURF_FILETYPE\"/" \
+$NAMELIST > OPTIONS.nam
+
+Cat_logs OPTIONS.nam
+
+ln -sf $ARCHIVE/ICMSHANAL+0000 CANARI  
+
+echo 'Soil analysis ...'
+$MPPEXEC $BINDIR/SODA || exit
+
+Cat_logs $log
+
+# Store data in $WRK directory 
+mv ANAL_INCR*  $WRK/.
+[ -f HO_WG2_v1 ] && mv HO_WG2_v1  $WRK/HO_WG2_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_WG2_v2 ] && mv HO_WG2_v2  $WRK/HO_WG2_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_WG2_v3 ] && mv HO_WG2_v3  $WRK/HO_WG2_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_WG1_v1 ] && mv HO_WG1_v1  $WRK/HO_WG1_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_WG1_v2 ] && mv HO_WG1_v2  $WRK/HO_WG1_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_WG1_v3 ] && mv HO_WG1_v3  $WRK/HO_WG1_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_TG2_v1 ] && mv HO_TG2_v1  $WRK/HO_TG2_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_TG2_v2 ] && mv HO_TG2_v2  $WRK/HO_TG2_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_TG2_v3 ] && mv HO_TG2_v3  $WRK/HO_TG2_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_TG1_v1 ] && mv HO_TG1_v1  $WRK/HO_TG1_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_TG1_v2 ] && mv HO_TG1_v2  $WRK/HO_TG1_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+[ -f HO_TG1_v3 ] && mv HO_TG1_v3  $WRK/HO_TG1_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+
+mv BGROUNDout_LBEV.* $ARCHIVE/.
+mv BGROUNDout_ASSIM.* $ARCHIVE
+
+# Store/update the pointer to the first guess / fc start
+mv PREP.lfi $ARCHIVE/PREP.lfi
+if [ $SURFEX_OUTPUT_FORMAT == "lfi" ] ; then
+  ln -sf $ARCHIVE/PREP.lfi $WRK/first_guess_sfx
+  ln -sf $ARCHIVE/PREP.lfi $WRK/fc_start_sfx
+else
+  conv sfxlfi2fa $ARCHIVE/PREP.fa $ARCHIVE/PREP.lfi $WRK/first_guess_sfx
+  ln -sf $ARCHIVE/PREP.fa $WRK/first_guess_sfx
+  ln -sf $ARCHIVE/PREP.fa $WRK/fc_start_sfx
+fi
+
+#------------------------------- 
+# tidy up and terminate 
+#------------------------------- 
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+ 
+exit 0

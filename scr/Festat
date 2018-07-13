@@ -1,0 +1,72 @@
+#!/bin/bash
+
+#
+# Template for running FESTAT
+#
+
+#########################################
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+if [ "$DTG" -eq $DTGEND ]; then
+
+#########################################
+
+# Get the domain properties
+
+F4=`perl -e "printf('%4.4i', '$FCINT')"`
+F=$( find $ARCHIVE_ROOT -name "ICMSH${CNMEXP}+*" | head -1 )
+$BINDIR/domain_prop_grib_api -f -4JB $F | grep -E -v 'E(LAT|LON)C|HALF' | tail -15 > prop.dat
+
+# Fetch the input files from the archive
+Access_lpfs -from "$HM_EXP/femars/*" .
+
+# Link the input files
+N=0
+for F in $( find . -name "ensdiff_*" ) ; do 
+ N=$(( $N + 1 ))
+ N3=`perl -e "printf('%3.3i', '$N')"`
+ ln -s $F ensdiff$N3
+done
+
+# Name the output files
+FILA=stab_${DOMAIN}_${VLEV}_${DTGBEG}_${N}.bal
+FILB=stab_${DOMAIN}_${VLEV}_${DTGBEG}_${N}.cvt
+FILC=stab_${DOMAIN}_${VLEV}_${DTGBEG}_${N}.cv
+
+# Build the namelist and run festat
+cat > fort.4 << EOF
+&NAMFESTAT
+  NPRINTLEV=0,
+  LSTABAL=.TRUE.,
+  LANAFBAL=.TRUE.,
+  LOZONE=.FALSE.,
+  LOZBAL=.FALSE.,
+  LUVBAL=.FALSE.,
+  OUTBAL='${FILA}',
+  OUTCVT='${FILB}',
+  OUTCVU='${FILC}',
+  NCASES=${N},
+  LELAM=.TRUE.,
+EOF
+cat prop.dat >> fort.4
+echo "/" >> fort.4
+
+$MPPEXEC $BINDIR/FESTAT || exit
+
+# Aarchive the result
+$MKDIR $EXTRARCH
+gzip $FILA $FILB $FILC
+mv $FILA.gz $FILB.gz $FILC.gz $EXTRARCH/. || exit 
+
+fi
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

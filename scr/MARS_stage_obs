@@ -1,0 +1,101 @@
+#!/bin/bash
+
+#-----------------------------------------------------------------------
+# STAGE observations from MARS
+#------------------------------------------------------------------------
+
+. header.sh
+
+cd $HM_DATA
+WDIR=Mars_stage_dir
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+. include.ass
+
+#
+# Step to the current DTG
+#
+DTG=${YMD}00
+while [ $DTG -lt $DTGBEG ] ; do
+   DTG=$( mandtg $DTG + $FCINT )
+done
+    
+# Extract data for one day
+# We include the last forecast date ( + some time window )
+# to make sure we cover the verification period.
+
+SDTG=`mandtg $DTG + -6`
+SDATE=`mandtg -date $SDTG`
+    
+EDTG=$SDTG
+DIFF=0
+while [ $EDTG -lt $DTGEND -a $DIFF -le 30 ] ; do
+   EDTG=`mandtg $EDTG + $FCINT`
+   DIFF=`mandtg $EDTG - $SDTG`
+done
+
+EDTG=`mandtg $EDTG + $LL`
+EDTG=`mandtg $EDTG + 6`
+EDATE=`mandtg -date $EDTG`
+    
+#
+# Build the observation list
+#
+
+OBSLIST=""
+
+if [ $BUOY_OBS -eq 1 ];then
+   OBSLIST="$OBSLIST/SSD"
+fi
+
+if [ $AIRCRAFT_OBS -eq 1 ];then
+   OBSLIST="$OBSLIST/SLNS"
+fi
+
+if [ $AMV_OBS -eq 1 ];then
+   OBSLIST="$OBSLIST/SLS"
+fi
+
+if [ $AMSUA_OBS -eq 1 ] || [ $AMSUB_OBS -eq 1 ] ;then
+   OBSLIST="$OBSLIST/ATOV"
+fi
+
+if [ $PILOT_OBS -eq 1 ];then
+   OBSLIST="$OBSLIST/P/PS/WP/EWP/EWTP"
+fi
+
+if [ $SYNOP_OBS -eq 1 ];then
+   OBSLIST="$OBSLIST/LSD"
+fi
+
+if [ $TEMP_OBS -eq 1 ];then
+   OBSLIST="$OBSLIST/T/TS/TD/TM"
+fi
+
+OBSLIST=$( echo $OBSLIST | sed 's/\///' )
+
+[[ -s ./retrin ]] && rm -f retrin
+
+#
+# Create the request
+#
+
+WriteMARSreq -s $SDATE -e $EDATE -o $OBSLIST -m ./retrin -q STAGE -t 0000 -r 1439
+
+if [ $IASI_OBS -eq 1 ];then
+   WriteMARSreq -s $SDATE -e $EDATE -o IASI -m ./retrin -q STAGE -t 0000 -r 1439
+fi
+
+#
+#--- MARS queue
+#
+
+cat ./retrin
+mars ./retrin || { echo "MARS failed" ; exit 1 ; }
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

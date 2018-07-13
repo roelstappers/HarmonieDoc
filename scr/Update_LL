@@ -1,0 +1,18 @@
+#!/bin/bash
+
+ # Find distance in hours to next month
+ YY=$( mandtg -year $DTG )
+ MM=$( mandtg -month $DTG )
+
+ NDTG=$( mandtg $YY${MM}1500 + 480 )
+ 
+ YY=$( mandtg -year $NDTG )
+ MM=$( mandtg -month $NDTG )
+
+ NDTG=$YY${MM}0100
+
+ mandtg $NDTG -gt $DTGEND && NDTG=$DTGEND
+ 
+ LL=$( mandtg $NDTG - $DTG )
+
+ echo $LL

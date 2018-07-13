@@ -1,0 +1,84 @@
+#!/bin/bash
+
+. header.sh
+. include.ass
+
+[ -d $WRK ] || mkdir $WRK
+cd $WRK || exit 1
+WDIR=$WRK/obsmon
+
+set -x
+# Find the active observation types and bases
+bases=""
+[ "$ANASURF" != "none" ] && bases="ecma_sfc $bases"
+[ "$ANAATMO" != "none" -a "$ANAATMO" != "blending" ] && bases="ecma ccma $bases"
+obtypes=""
+[ "$SYNOP_OBS" -eq 1 -o "$BUOY_OBS" -eq 1 ] && obtypes="$obtypes synop ship dribu"
+[ "$AIRCRAFT_OBS" -eq 1 ] && obtypes="$obtypes aircraft"
+[ "$AMV_OBS"      -eq 1 ] && obtypes="$obtypes amv"
+[ "$TEMP_OBS"     -eq 1 ] && obtypes="$obtypes temp"
+[ "$PILOT_OBS"    -eq 1 ] && obtypes="$obtypes pilot"
+[ "$AMSUA_OBS"    -eq 1 ] && obtypes="$obtypes amsua"
+[ "$AMSUB_OBS"    -eq 1 ] && obtypes="$obtypes amsub mhs"
+[ "$IASI_OBS"     -eq 1 ] && obtypes="$obtypes iasi"
+[ "$PAOB_OBS"     -eq 1 ] && obtypes="$obtypes paob"
+[ "$SCATT_OBS"    -eq 1 ] && obtypes="$obtypes scatt"
+[ "$LIMB_OBS"     -eq 1 ] && obtypes="$obtypes limb"
+[ "$RADAR_OBS"    -eq 1 ] && obtypes="$obtypes radar"
+
+set -x
+# Extract paths
+[[ -s $EXTRARCH ]] || $MKDIR $EXTRARCH/$OBSMON_EXP
+cd $EXTRARCH/$OBSMON_EXP || exit
+
+for base in $bases; do
+  basedir=$base
+  [ "$base" == "ecma_sfc" ] && base="ecma"
+
+  if [ -d $EXTRARCH/$OBSMON_EXP/$basedir ]; then
+
+    # Go to work dir
+    [ -d $WRK/obsmon/$basedir ] || mkdir -p $WRK/obsmon/$basedir 
+    cd $WRK/obsmon/$basedir || exit 1
+    [ -f ${base}.sql ] && rm ${base}.sql
+
+    # Create directory for SQLite tables
+    [ -d $EXTRARCH/$OBSMON_EXP/$basedir/$DTG ] || mkdir -p $EXTRARCH/$OBSMON_EXP/$basedir/$DTG
+    for obtype in $obtypes; do
+      # Link extracted statistics
+      [ -d $WRK/obsmon/$basedir/$DTG ] || mkdir $WRK/obsmon/$basedir/$DTG
+      if [ -d $EXTRARCH/$OBSMON_EXP/$basedir/$DTG ]; then
+        cd $EXTRARCH/$OBSMON_EXP/$basedir/$DTG || exit 1
+        # Link database from archive
+        if [ -f ${base}_${obtype}_${DTG}.db ]; then
+          ln -sf $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/${base}_${obtype}_${DTG}.db $WRK/obsmon/$basedir/${base}_${obtype}_${DTG}.db
+        fi
+      fi
+      # Dump the individual databases so that we can make one big one for this base
+      cd $WRK/obsmon/$basedir || exit 1
+      if [ -f ${base}_${obtype}_${DTG}.db ]; then
+        $BINDIR/sqlite3 -vfs unix-none ${base}_${obtype}_${DTG}.db ".dump" |sed -e "s/CREATE TABLE/CREATE TABLE IF NOT EXISTS/" >> ${base}.sql
+      else
+        touch ${base}.sql
+      fi
+    done
+    
+    # Create new SQLite data base for this DTG
+    [ -f $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/${base}.db ] && rm $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/${base}.db
+    $BINDIR/sqlite3 -vfs unix-none $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/${base}.db ".read ${base}.sql"
+
+    # Create index on data base
+    time $BINDIR/sqlite3 -vfs unix-none $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/${base}.db "pragma temp_store=1; pragma temp_store_directory=\"$WDIR\"; create index obsmon_index on usage(DTG,obnumber,obname);"
+
+    # Now we can remove the sql file
+    [ -f ${base}.sql ] && rm ${base}.sql
+
+  else
+    echo "No database exists for $basedir / $base for $DTG"
+  fi
+done
+
+# Normal exit
+trap - 0
+exit
+

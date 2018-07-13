@@ -1,0 +1,27 @@
+#!/bin/bash
+
+#
+# Build utilities
+#
+
+
+. header.sh
+
+MYTASK=`echo $TASK | awk '{print substr($1,6,20)}'`
+
+# Where to search for BUFR libraries
+ROOTDIR=$HM_LIB export ROOTDIR
+export BUILD_DIR=${MAKEUP_BUILD_DIR-$ROOTDIR/$HARMONIE_CONFIG}
+
+cd $HM_LIB/util/$MYTASK/ || exit
+
+$MAKE ARCH=$HARMONIE_CONFIG || exit 1
+
+[[ -s $BINDIR ]] || mkdir -p $BINDIR
+
+# Copy binaries to main bin directory
+[[ -s ./bin ]] && cp bin/* $BINDIR/.
+[[ -s ./$HARMONIE_CONFIG/bin ]] && cp ./$HARMONIE_CONFIG/bin/* $BINDIR/.
+
+trap - 0
+exit

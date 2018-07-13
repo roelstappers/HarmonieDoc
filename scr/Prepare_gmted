@@ -1,0 +1,101 @@
+#!/bin/bash
+#
+# Prepare GMTED2010 data to be used as input for PGD
+#
+
+LOCKFILE=$HM_DATA/lock.gmted2010
+
+error_exit() {
+    echo `date +"%Y-%m-%dT%H:%M:%SZ"` ERROR: $1 
+    rm -f $LOCKFILE
+    exit 1
+}
+
+trap "error_exit" INT TERM
+
+lockfile.sh $LOCKFILE
+
+tiflist=$(ls $GMTED2010_DATA_PATH/*.tif | wc -l)
+[ $tiflist -gt 0 ] || error_exit "No geotiff files in $GMTED2010_DATA_PATH"
+
+$MKDIR $CLIMDIR || error_exit "Unable to create $CLIMDIR"
+
+# Find extension of the domain
+$BINDIR/domain_prop_grib_api -MAX_EXTR \
+-NLON $NLON -NLAT $NLAT \
+-LATC $LATC -LONC $LONC \
+-LAT0 $LAT0 -LON0 $LON0 \
+-GSIZE $GSIZE 2> foo_error > foo || { ERRORMSG=$( cat foo_error ) ; error_exit "$ERRORMSG" ; }
+
+ EAST=$( tail -1 foo | head -1 | awk '{print int($1)}' | sed 's/ //g' )
+NORTH=$( tail -2 foo | head -1 | awk '{print int($1)}' | sed 's/ //g' )
+ WEST=$( tail -3 foo | head -1 | awk '{print int($1)}' | sed 's/ //g' )
+SOUTH=$( tail -4 foo | head -1 | awk '{print int($1)}' | sed 's/ //g' )
+
+# Find the latitudes
+GMTED2010_INPUT_LATS=""
+for LAT in $(seq 70 -20 0); do 
+  [ $NORTH -gt $LAT ] && GMTED2010_INPUT_LATS="${GMTED2010_INPUT_LATS}${LAT}N "
+  if [ $SOUTH -gt $LAT ]; then
+    HDR_SOUTH=$LAT
+    break
+  fi
+done
+HDR_NORTH=$(echo $GMTED2010_INPUT_LATS | sed 's/N//g' | awk '{print $1+20}')
+ 
+# Find the longitudes
+GMTED2010_INPUT_LONS=""
+HDR_WEST=999
+for LON in $(seq -180 30 150); do 
+  if [ $WEST -lt $LON ]; then
+    GMTEDLON=$(echo $LON | awk '{lon=$1-30; if ($1 <= 0) {printf "%03dW\n",-1*lon} else {printf "%03dE\n",lon}}')     
+    GMTED2010_INPUT_LONS="${GMTED2010_INPUT_LONS}${GMTEDLON} " 
+    [ $HDR_WEST -eq 999 ] && HDR_WEST=$(echo $LON | awk '{print $1-30}')
+  fi
+  if [ $EAST -lt $LON ]; then 
+    HDR_EAST=$LON
+    break
+  fi
+done
+
+# Create the input filelist
+GMTED2010_INPUT_FILES=""
+for LAT in $GMTED2010_INPUT_LATS; do
+  for LON in $GMTED2010_INPUT_LONS; do
+    GMTEDFILE=${GMTED2010_DATA_PATH}/${LAT}${LON}*mea075.tif
+    GMTED2010_INPUT_FILES="$GMTED2010_INPUT_FILES $GMTEDFILE "
+  done
+done
+
+# Merge the GMTED2010 tiles into one geotif
+gdal_merge.py -o $CLIMDIR/gmted_mea075.tif $GMTED2010_INPUT_FILES || error_exit "Script gdal_merge.py failed"
+
+# Find the size of the new geotif
+gdalinfo $CLIMDIR/gmted_mea075.tif | grep "^Size" | grep -o [0-9].* | sed 's/,//g' > foo || error_exit "Program gdalinfo failed"
+HDR_ROWS=$(cat foo | awk '{print $2}')
+HDR_COLS=$(cat foo | awk '{print $1}')
+
+# Convert the GMTED2010 geotif -> binary format
+tif2bin.py $CLIMDIR/gmted_mea075.tif $CLIMDIR/gmted2010.dir
+
+[ -s $CLIMDIR/gmted2010.dir ] || error_exit "Unable to convert tif to bin"
+
+# Create the header file
+cat > ${CLIMDIR}/gmted2010.hdr << EOF
+PROCESSED GMTED2010, orography model, resolution 250m
+nodata: -9999
+north: ${HDR_NORTH}.
+south: ${HDR_SOUTH}.
+west: ${HDR_WEST}.
+east: ${HDR_EAST}.
+rows: ${HDR_ROWS}
+cols: ${HDR_COLS}
+recordtype: integer 16 bytes
+EOF
+
+[ -s $CLIMDIR/gmted2010.hdr ] || error_exit "Unable to write header file"
+
+rm -f $CLIMDIR/gmted_mea075.tif
+rm -f $LOCKFILE
+
+exit 0

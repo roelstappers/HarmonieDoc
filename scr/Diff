@@ -1,0 +1,192 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+Diff - Harmonie diff utility
+
+
+=head1 SYNOSPIS
+
+Harmonie diff [-i] [-l] [-vi] [<name>] [<name>] ...
+
+
+=head1 DESCRIPTION
+
+This utility compares the files of the current Harmonie experiment directory
+with the respective repository (defined in hm_rev). If no argument is
+given all files with differences are found and shown using the 'diff'
+UNIX command.
+
+<name> can be used to restrict the search for files with the given name.
+If no file or directory with <name> exists in the repository, then Diff
+will take <name> as a wild-card and search for files that contain <name>
+somewhere in their name or path.
+Please note that the wild-card feature is first activated, if of file
+or directory is found in the repository, that matches <name> exactly.
+
+
+=head1 OPTIONS
+
+  -i  prompt between the file listings in order to continue
+
+  -l  print out the differeing file names instead of showing the
+      differences
+
+  -vi use "vi" in order to show the differences instead of diff. This
+      starts vim in diff-mode, and it works only for vim versions above
+      version 5.
+
+  -help|-man  show this manual page
+
+
+=head1 EXAMPLES
+
+  1. show a list of all files that differ from the repository:
+
+        harmonie diff -l
+
+  2. show a list of all files in scr/ that differ from the repository:
+
+        harmonie diff -l scr
+
+  3. show the differences of files in the directory "config-sh":
+
+        harmonie diff config-sh
+
+  4. show the differences of more sms related files (sms,
+     msms ...):
+
+        harmonie diff sms
+
+  5. show differences of all files under gl, and use vi to show the
+     differences, prompting for continuation after each file comparison:
+
+        harmonie diff -i -vi gl
+
+=cut
+
+use Getopt::Long;
+use File::Basename;
+use File::Find;
+use File::Path;
+use Shell qw(cmp);
+
+my $Iam = ${[fileparse($0)]}[0];
+
+
+# parse command line options
+my %opt = ();
+$Getopt::Long::order = $PERMUTE;
+$Getopt::Long::autoabbrev = 1;
+$Getopt::Long::ignorecase = 0;
+&GetOptions(\%opt, "i", "l", "vi", "xxdiff", "man", "help");
+
+if ($opt{'help'} || $opt{'man'}) {
+  require Pod::Text;
+  &Pod::Text::pod2text($0);
+  exit(1);
+}
+
+
+# set the diff command
+my (@diff_command);
+if ($opt{'vi'}) {
+  @diff = ("vim", "-d");
+}
+elsif ($opt{'xxdiff'}) {
+  @diff = ("xxdiff", "-wib");
+}
+else {
+  @diff = ("diff", "-a");
+}
+
+
+unless (-d $ENV{'HM_WD'}) {
+  die "$Iam: FATAL ERROR, cannot find experiment directory $ENV{'HM_WD'}";
+}
+
+# set wild card, if no argument was given
+@ARGV = ('*') if (@ARGV == 0);
+
+chdir($ENV{'HM_REV'}) or die "$Iam: FATAL ERROR, cannot chdir to revision directory $ENV{'HM_REV'}";
+$subdir = ".";
+
+ARG: foreach ( @ARGV ) {
+  s:/$::;
+  # inherit the path from the former argument if no new path is given
+  $subdir = dirname($_) if m:/:;
+  $file = basename($_);
+  @found = ();
+  @files = ();
+  @diff_list = ();
+  unless (-f "${subdir}/$file") {
+    # if file is not directly found, look for it
+    print "$Iam: looking for $file ...\n";
+    find(\&list, ".");
+    sub list {
+      if ($File::Find::name !~ m:/\.(svn/|svn\b):) {
+        push @found, $File::Find::name if grep /\b${file}$/, $File::Find::name;
+      }
+    }
+    unless (@found) {
+      print "$Iam: looking for files named similar to $file ...\n";
+      find(\&listsimilar, ".");
+      sub listsimilar {
+        if ($File::Find::name !~ m:/\.(svn/|svn\b):) {
+          push @found, $File::Find::name if grep /${file}/, $File::Find::name;
+        }
+      }
+    }
+    unless (@found) {
+      $file = "'" . $file . "'";
+      print STDERR "$Iam: cannot find $file under $ENV{'HM_REV'}\n";
+      next ARG;
+    }
+    map { s/^\.\/// } @found;
+    # expand directories to the files contained therein
+    foreach (@found) {
+      if (-d $_) {
+        find(\&add, "$_");
+        sub add {
+          if ($File::Find::name !~ m:/\.(svn/|svn\b):) {
+            push @files, $File::Find::name if (-f "$ENV{'HM_REV'}/$File::Find::name");
+          }
+        }
+      }
+      elsif (-f $_) {
+        push @files, $_;
+      }
+    }
+    map { s/^\.\/// } @files;
+    # strip the list of files down to those files that exist in HM_WD, and that differ wrt thr revision version
+    foreach $file (@files) {
+      if (-f "$ENV{HM_WD}/$subdir/$file") {
+        if (cmp("$ENV{HM_REV}/$subdir/$file", "$ENV{HM_WD}/$subdir/$file")) {
+          push @diff_list, $file unless (scalar grep { m:^$file$: } @diff_list);
+        }
+      }
+    }
+  }
+  unless (@diff_list) {
+    print STDERR "$Iam: no differing files found\n";
+    next ARG;
+  }
+  print STDERR "$Iam: ", scalar @diff_list, " differing files found\n" if (@diff_list > 1);
+  $count = 1;
+  foreach (@diff_list) {
+    if ($opt{'l'}) {
+      printf "%5d: %s\n", $count++, $_;
+    }
+    else {
+      printf "\n::::::%5d: %s\n", $count++, $_ unless ($opt{'vi'});
+      system (@diff, "$ENV{HM_REV}/$subdir/$_", "$ENV{HM_WD}/$subdir/$_");
+      print "::::::\n" unless ($opt{'vi'}); 
+      if ($opt{'i'}) {
+        print "--> press ENTER to continue or 'exit' to stop ";
+        $input = <STDIN>;
+        print "\n";
+        die "exiting on request\n" if ($input =~ /^(exit|quit|bye)$/i);
+      }
+    }
+  }
+}

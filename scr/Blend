@@ -1,0 +1,85 @@
+#!/bin/bash
+#
+# Blending of different files
+# Blend FILE1 FILE2 OUTPUTFILE
+# FILE1: File which from we should take main model state
+# FILE2: File which from we should take cloud fields, TKE, ...
+#
+
+
+. header.sh
+. functions.ksh
+
+cd "$WRK"
+WDIR=$(hostname)$$
+Workdir "$WDIR"
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+# Get the input
+ln -s "$1" FILE1
+ln -s "$2" FILE2
+cp    "$1" FILE3
+
+# TKE settings
+if [ "$PHYSICS" = alaro ] ; then
+   L_TKE=F
+else
+   L_TKE=T
+fi
+
+# Copy NH fields 
+if [ "$DYNAMICS" = nh ] ; then
+   L_SPEC_NH=T
+else
+   L_SPEC_NH=F
+fi
+
+
+# AROME cloud variables
+is_coldstart=$( cat $WRK/is_coldstart )
+if [ "$PHYSICS" = arome ] ; then
+   LAROME=T
+   LOPEZ=F
+   if [ $is_coldstart != "yes" -a "${INITCLOUDFRACTI-yes}" = yes ]; then
+     L_CLOUD_FRACTI=T
+   else
+     L_CLOUD_FRACTI=F
+   fi
+else
+   LAROME=F
+   LOPEZ=T
+   L_CLOUD_FRACTI=F
+fi
+
+cat > fort.4 <<EOF
+&NAMBLEND
+   Z_NSIGN=0.,
+   CLFNAME(1)='FILE1',
+   CLFNAME(2)='FILE2', 
+   CLFNAME(3)='FILE3',
+   L_HYDRO=.FALSE., 
+   L_LOPEZ=$LOPEZ,
+   L_AROME=$LAROME,
+   L_CLOUD_FRACTI=$L_CLOUD_FRACTI,
+   L_TKE=$L_TKE,
+   L_Q=.FALSE.,
+   L_NH=$L_SPEC_NH,
+/
+&NAMDYNCORE
+/ 
+&NAMSCEN
+/
+EOF
+
+export DR_HOOK_NOT_MPI=1
+
+$MPPGL "$BINDIR"/BLEND  || exit 1
+
+mv FILE3 "$3"
+
+# Normal exit
+cd ..
+rm -fr "$WDIR"
+trap - 0
+exit

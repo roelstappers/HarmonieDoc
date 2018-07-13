@@ -1,0 +1,31 @@
+#!/bin/bash
+
+#
+# Extract climate files for HARMONIE host model
+# 
+
+# Set default boundary file climate if not set by user
+EXT_BDCLIM=${EXT_BDCLIM-$ECFSLOC:/$USER/harmonie/$BDLIB/climate}
+
+trap " echo 'Could not find data under $EXT_BDCLIM' "  0
+
+[[ -s $BDCLIM ]] || mkdir -p $BDCLIM
+cd $BDCLIM 
+
+
+M1=`mandtg -month $DTG`
+M2=$( expr $M1 + 1 )
+[ $M2 -eq 13 ] && M2=01
+set +e
+M3=$( expr $M1 - 1 )
+set -e
+[ $M3 -eq 0 ] && M3=12
+M2=`perl -e "printf('%2.2i', '$M2')"`
+M3=`perl -e "printf('%2.2i', '$M3')"`
+
+for F in m$M1 m$M2 m$M3 PGD.lfi Const.Clim.sfx ; do
+ if [ ! -s $BDCLIM/$F ] ; then
+  Access_lpfs -from $EXT_BDCLIM/$F . || exit
+  echo "Extracted BDclim-file $F to $BDCLIM"
+ fi 
+done

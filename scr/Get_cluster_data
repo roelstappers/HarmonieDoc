@@ -1,0 +1,41 @@
+#!/bin/bash
+
+cd $HM_DATA
+
+set -xe
+
+ENSMBR=000
+MBRCONFIG=$HM_LIB/sms/config_mbr$ENSMBR.h
+[[ -s $MBRCONFIG ]] && source $MBRCONFIG
+
+
+export LL=36
+export BDINT=6
+
+# Switch off the clustering locally
+export ENS_BD_CLUSTER=no
+Boundary_strategy.pl > $WRK/bdstrat_cluster
+
+export MARS_GET_CLUSTER=yes
+rm -f  $WRK/mars_cluster
+Get_bdtimes.pl  $WRK/bdstrat_cluster $WRK/mars_cluster PREFETCH
+
+  #
+  # MARS fails sometimes simply because hpss is busy
+  # Second try most often work...
+  #
+
+  mars_failed=1
+  i=1
+  while [ $mars_failed -eq 1 -a $i -le 2 ] ; do
+     mars_failed=0
+     mars $WRK/mars_cluster || { mars_failed=1 ; }
+     i=$(( $i + 1 ))
+  done
+
+  [[ $mars_failed -eq 1 ]] && { echo "MARS failed in MODE $MODE" ; exit 1 ; }
+
+# Clean
+# rm -f $WRK/bdstrat_${MODE} $WRK/mars_${MODE}*
+
+exit 0

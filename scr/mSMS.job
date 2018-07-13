@@ -1,0 +1,43 @@
+# Run mini-SMS through a batch queueing system
+# This job script is supposed to be processed by scr/Submit.pl
+# (which again sources submission.db and Env_submit)
+# System-specific changes should be made in Env_submit, under task mSMS
+# Ole Vignes, 19.12.2011
+
+SMSNAME=mSMS     export SMSNAME
+SMSTRYNO=log     export SMSTRYNO
+
+## Recover original environment (saved from Start script)
+mSMS_env=./.mSMS_env_sh
+if [ ! -s $mSMS_env ]; then
+   echo "FATAL ERROR: mSMS environment file $mSMS_env not found!"
+   echo "Cannot (re)start mini-SMS scheduler!"
+   echo "Current working directory is $PWD"
+   exit 1
+fi
+. $mSMS_env
+
+## Recover original HARMONIE system environment
+if [ ! -s $ENV_SYSTEM ]; then
+   echo "FATAL ERROR: HARMONIE system environment file $ENV_SYSTEM not found!"
+   exit 1
+fi
+. $ENV_SYSTEM
+
+ ## The old monitor does not work if mSMS.pl runs in a batch job
+ export mXCdp=DISABLE
+
+ ## What extra mSMS options do we need? For a run restarted from the
+ ## monitor they are different from those of the first invocation
+
+ mSMS_opts=./.msmsopts
+ if [ ! -s $mSMS_opts ]; then
+   echo "FATAL ERROR: mSMS option file $mSMS_opts not found!"
+   echo "Cannot (re)start mini-SMS scheduler!"
+   echo "Current working directory is $PWD"
+   exit 1
+ fi
+ msmsopts=$( cat $mSMS_opts )
+
+ ## Start the scheduler (does not really need PERL_TK)
+ ${PERL_TK-perl} -S mSMS.pl $SMSOPTS $msmsopts --play $PLAYFILE

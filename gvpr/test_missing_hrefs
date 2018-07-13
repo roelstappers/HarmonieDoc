@@ -1,0 +1,3 @@
+BEG_G {print("\033[0;31mECFLOW Nodes with missing hrefs:\033[0m")} 
+N[type=="ecflowtask" && href==""]{print($)}
+

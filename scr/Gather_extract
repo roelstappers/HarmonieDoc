@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# 
+# Gather observation and model data extracted from BUFR files or model output
+# Move the tar files from the working directory to $EXTRARCH
+# 
+
+. header.sh
+
+
+cd $WRK || exit
+
+# Determine experiment name, may be different in case of an ensemble run
+VFLDEXP=${VFLDEXP-$EXP}
+
+VFLD=""
+FOUND_VFLD=0
+
+for F in $( ls -1 vfld* ) ; do
+VFLD="$VFLD $F"
+FOUND_VFLD=1
+done
+
+if [ $FLDEXTR = yes ] && [ $FOUND_VFLD -eq 1 ] ; then
+  tar cvf vfld$VFLDEXP$YMD$HH.tar $VFLD || exit
+  gzip vfld$VFLDEXP$YMD$HH.tar 
+  mv vfld$VFLDEXP$YMD$HH.tar.gz $EXTRARCH/.
+fi 
+
+if [ $OBSEXTR = bufr ] ; then
+  for F in $( ls -1 vobs*.tar.gz ) ; do
+    mv $F $EXTRARCH/.
+  done
+fi
+
+trap 0
+exit

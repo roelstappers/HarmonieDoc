@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# 
+# Copy all .sms files to the .ecf equivalence and perform subsitution where applicable
+# 
+
+$MKDIR $HM_LIB/ecf
+
+# Define the substitution rules
+cat > sed.rules << EOF
+s:#!/bin/sh::g
+s:sms\.h:head\.h:g
+s:end\.h:tail\.h:g
+s:smskill:ecf_kill:g
+s:smssubmit:ecf_submit:g
+s:smsstatus:ecf_status:g
+s:SMSNAME:ECF_NAME:g
+s:SMSNODE:ECF_NODE:g
+s:SMSPASS:ECF_PASS:g
+s:SMS_PROG:ECF_PORT:g
+s:SMSINCLUDE:ECF_INCLUDE:g
+s:SMSFILES:ECF_FILES:g
+s:SMSTRYNO:ECF_TRYNO:g
+s:SMSHOME:ECF_HOME:g
+s:SMSRID:ECF_RID:g
+s:SMSJOB:ECF_JOB:g
+s:SMSJOBOUT:ECF_JOBOUT:g
+s:SMSOUT:ECF_OUT:g
+s:SMSCHECKOLD:ECF_CHECKOLD:g
+s:SMSCHECK:ECF_CHECK:g
+s:SMSLOG:ECF_LOG:g
+s:SMSLISTS:ECF_LISTS:g
+s:SMSPASSWD:ECF_PASSWD:g
+s:SMSSERVERS:ECF_SERVERS:g
+s:SMSMICRO:ECF_MICRO:g
+s:SMSPID:ECF_PID:g
+s:SMSHOST:ECF_HOST:g
+s:SMSDATE:ECF_DATE:g
+s:SMSURL:ECF_URL:g
+s:SMSURLBASE:ECF_URLBASE:g
+s:SMSCMD:ECF_JOB_CMD:g
+s:SMSKILL:ECF_KILL_CMD:g
+s:SMSSTATUSCMD:ECF_STATUS_CMD:g
+s:SMSURLCMD:ECF_URL_CMD:g
+s:SMSWEBACCESS:ECF_WEBACCESS:g
+s:SMS_VERS:ECF_VERS:g
+s:SMS_VERSION:ECF_VERSION:g
+/edit ECF_INCLUDE/ {
+s:/include:/include_ecf:g
+}
+/edit ECF_INCLUDE/ {
+s:_prod:_prod_ecf:g
+}
+/edit ECF_FILES/ {
+s:_prod:_prod_ecf:g
+}
+s:smshostfile:ecf_hostfile:g
+s:sms_hosts:ecf_hosts:g
+s:\bSMS\b:ECFLOW:g
+s:\bdefault\.sms\b:default\.ecf:g
+EOF
+
+# Treat all files
+for F in $( find $HM_LIB/sms/ -type f | grep -v '\.h' ) ; do  
+ E=$( basename $F .sms )
+ # Handle change from link to file
+ [[ -L $HM_LIB/sms/$E.ecf ]] && rm -f $HM_LIB/sms/$E.ecf
+
+ sed -f sed.rules $F > $HM_LIB/ecf/$E.ecf
+done
+
+# Treat all links
+for F in $( find $HM_LIB/sms/ -type l) ; do 
+ REF=$( ls -l $F | cut -d">" -f2 | sed s"/ //g" )
+ E=$( basename $F .sms )
+ R=$( basename $REF .sms )
+ ln -sf $HM_LIB/ecf/$R.ecf $HM_LIB/ecf/$E.ecf
+done
+
+echo "%include <tail.h>" >> $HM_LIB/ecf/InitRun.ecf
+
+
+rm -f sed.rules
+

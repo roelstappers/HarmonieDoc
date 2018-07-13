@@ -1,0 +1,160 @@
+#!/bin/bash
+
+#
+# EKF SURFEX 
+#
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+if [ "$#" -ne "2" ]; then
+  echo "Usage: $0 EKF_PERT EKF_NPERT"
+  exit 1
+else
+  EKF_PERT=$1
+  EKF_NPERT=$2
+  if [ "$EKF_PERT" -lt "1" -o "$EKF_PERT" -gt "$EKF_NPERT" ]; then
+    echo "EKF pert $EKF_PERT must be larger than 0 and less or equal to $EKF_NPERT"
+    exit 1
+  fi
+fi
+
+
+#
+# Define forcing files 
+#
+
+offline_forc_files="Forc_CO2.txt Forc_DIR.txt Forc_DIR_SW.txt Forc_LW.txt Forc_PS.txt Forc_QA.txt Forc_RAIN.txt Forc_SCA_SW.txt Forc_SNOW.txt Forc_TA.txt Forc_WIND.txt Params_config.txt"
+
+#
+# Extract current and first guess date
+#
+
+YY=$( mandtg -year  $DTG )
+MM=$( mandtg -month $DTG )
+DD=$( mandtg -day   $DTG )
+HH=$( mandtg -hour  $DTG )
+HH=$(printf "%.2d" "$HH")
+
+FGDTG=$( mandtg $DTG + -$FCINT )
+FGYY=$( mandtg -year  $FGDTG )
+FGMM=$( mandtg -month $FGDTG )
+FGDD=$( mandtg -day   $FGDTG )
+FGHH=$( mandtg -hour  $FGDTG )
+FGHH=$(printf "%.2d" "$FGHH")
+
+log="LISTING_SODA.txt"
+
+# Link Ecoclimap cover files
+ln -sf $CLIMDIR/*.bin .
+
+#
+# Get the SURFEX first initial values
+#
+
+adir=$( ArchDir $ARCHIVE_ROOT $FGYY $FGMM $FGDD $FGHH )
+if [ "${FGYY}${FGMM}${FGDD}${FGHH}" == "$DTGBEG" ]; then
+  IVS=$adir/PREP_init.$SURFEX_OUTPUT_FORMAT
+else
+  IVS=$adir/PREP.$SURFEX_OUTPUT_FORMAT
+fi
+if [ -s $IVS ]; then
+  cp $IVS $WRK/PREP_REF.$SURFEX_OUTPUT_FORMAT
+else
+  echo "No initial values $IVS for offline surfex found!"
+  exit 1
+fi
+
+#
+# Get atmospheric forcing data 
+#
+
+for forc_file in $offline_forc_files; do
+  cp -f $WRK/forcing_${FGDTG}_${FCINT}/$forc_file $forc_file
+done
+
+# Fetch first_guess and result from CANARI
+ln -s $WRK/first_guess          FG_OI_MAIN
+ln -s $WRK/CANARI               CANARI
+
+# Climate file
+MM=$( mandtg -month $DTG )
+ln -s $CLIMDIR/m$MM clim_isba
+ln -s $CLIMDIR/PGD.lfi PGD.lfi
+ln -s $CLIMDIR/Const.Clim.sfx Const.Clim.sfx
+
+# Turn off MPI initialization in Dr.Hook
+export DR_HOOK_NOT_MPI=1
+
+#
+# VARASSIM - define perturbed initial conditions
+#
+
+if [ "$SURFEX_OUTPUT_FORMAT" == "fa" ]; then 
+  conv sfxfa2lfi $WRK/PREP_REF.fa PREP.lfi
+else
+  cp -f $WRK/PREP_REF.lfi PREP.lfi
+fi
+
+# Get and modify the namelist
+NAMELIST=$WRK/$WDIR/namelist_sfx_ekf_main
+Get_namelist sfx_ekf_main $NAMELIST
+# Hard code LPERSURF to be .FALSE.
+lpertsurf=.FALSE.
+
+CSURF_FILETYPE="LFI   "
+sed -e "s/IVAR=VV/IVAR=$EKF_PERT/" \
+    -e "s/NVAR=NV/NVAR=$EKF_NPERT/" \
+    -e "s/LSIM=LSIM/LSIM=.FALSE./" \
+    -e "s/LPRT=LPRT/LPRT=.TRUE./" \
+    -e "s/LBFIXED=LBFIXED/LBFIXED=.FALSE./" \
+    -e "s/LBEV=LBEV/LBEV=.FALSE./" \
+    -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+    -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+    -e "s/INCV=INCV/INCV=$INCV/" \
+    -e "s/INCO=INCO/INCO=$INCO/" \
+    -e "s/=LAROME/=.FALSE./" \
+    -e "s/=LECSST/=.FALSE./" \
+    -e "s/=LAESNM/=.FALSE./" \
+    -e "s/=CSURF_FILETYPE/=\"$CSURF_FILETYPE\"/" \
+$NAMELIST > OPTIONS.nam
+
+Cat_logs OPTIONS.nam
+
+#
+#  SURFEX run with perturbed initial conditions
+#
+
+echo 'SURFEX run with perturbation' $EKF_PERT
+$MPPEXEC $BINDIR/SURFEX || exit
+CDATE=$(mandtg -date $DTG )
+CHOUR=$(mandtg -hour $DTG )
+cp SURFOUT.${CDATE}_${CHOUR}h00.lfi PREP.lfi
+
+# Convert to FA if needed
+if [ "$SURFEX_OUTPUT_FORMAT" == "fa" ]; then
+  MM_MAIN=`mandtg -month $DTG`
+  conv sfxlfi2fa PREP.fa PREP.lfi $CLIMDIR/m$MM_MAIN
+  mv PREP.fa $ARCHIVE/PREP_EKF_PERT${EKF_PERT}.fa
+fi
+
+mv PREP.lfi $ARCHIVE/PREP_EKF_PERT${EKF_PERT}.lfi
+
+Cat_logs LISTING_OUTPUT
+
+#------------------------------- 
+# tidy up and terminate 
+#------------------------------- 
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+ 
+exit 0

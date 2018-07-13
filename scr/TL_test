@@ -1,0 +1,111 @@
+#!/bin/bash
+
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+CFPATH="ICMSH"
+# Clean cycle directory for old forecast files and listener file
+rm -f ../${CFPATH}${CNMEXP}+*
+rm -f ../AROMOUT_.*.lfi
+rm -f ../fc_signals
+#
+#
+
+NCONF=501		# IFS configuration
+VERSION=meteo		# Version
+ADVEC=sli		# Advection
+
+#
+# Modify namelist
+#
+
+# Boundary file interval
+LBDINT=$( expr $BDINT \* 3600)
+
+#  Get namelist name
+NAMELIST=$WRK/$WDIR/namelist_e$NCONF
+Get_namelist e$NCONF $NAMELIST
+
+sed -e "s/BDINT/$LBDINT/" \
+    -e "s/NBPROC/$NPROC/g" \
+    -e "s/NPROCX/$NPROCX/g" \
+    -e "s/NPROCY/$NPROCY/g" \
+    $NAMELIST > fort.4
+
+Cat_logs fort.4
+
+#
+#
+# Link initial and boundary files 
+#
+#
+
+ln -sf ELSCF${CNMEXP}ALBC000 ICMSH${CNMEXP}INIT
+ln -sf ICMSH${CNMEXP}INIT ICMSH${CNMEXP}IMIN
+
+INT_BDDIR=$( dirname $INT_BDFILE )
+
+II=0
+FF=0
+while [ $FF -le $LL ] ; do
+   FFF=`perl -e "printf('%3.3i', '$FF')"`
+   III=`perl -e "printf('%3.3i', '$II')"`
+   FILE=$( grep "${FFF}|" $WRK/bdstrategy | awk '{print substr($2,1)}' ) 
+   ln -s $FILE ELSCF${CNMEXP}ALBC$III
+   FF=$( expr $FF + $BDINT )
+   II=$( expr $II + 1 )
+done
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+#
+# Execute
+#
+
+export DR_HOOK=1
+$MPPEXEC $BINDIR/$MODEL || exit
+
+
+NODEFILE="NODE.001_01"
+Cat_logs $NODEFILE
+
+# A small script to grep out the relevant text for the TL-test from the NODE file
+VARS="PRES VORT DIVE TEMP HUMI MWU MWV"
+for VAR in $VARS; do
+  firstratnumber=-99
+  if [ "$VAR" == "MWU" ] || [ "$VAR" == "MWV" ]; then
+    [ "$VAR" == "MWU" ] && VAR="MEAN WIND U"
+    [ "$VAR" == "MWV" ] && VAR="MEAN WIND V"
+    string="more $NODEFILE | grep ' RAT =' | grep '$VAR' |  awk '{print \$6}'"
+    ratnumbers=`eval $string`
+  else
+    string="more $NODEFILE | grep ' RAT =' | grep '$VAR' | awk '{print \$4}'"
+    ratnumbers=`eval $string`
+  fi
+  for ratnumber in $ratnumbers; do
+    # Check if all values of RAT are looped 
+    if [ "$firstratnumber" -ne "$ratnumber" ]; then
+      echo " $VAR   I = $ratnumber   LAMBDA=-10,-1"
+      echo "================================="
+      string="more $NODEFILE | grep ' RAT =' | grep '$VAR' | grep '$ratnumber RAT ='"
+      eval $string
+      echo
+      echo
+    fi
+    # First time store RAT number
+    [ "$firstratnumber" -eq "-99" ] && firstratnumber=$ratnumber
+  done
+done
+
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0

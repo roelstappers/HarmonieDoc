@@ -1,0 +1,326 @@
+#!/bin/bash
+
+#############################################
+#
+# Digital Filter Initialization
+#
+#############################################
+
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#############################################
+#
+# Preparations and setup
+#
+#############################################
+
+
+#
+# Sanity check
+#
+if [ $DFI == "none" ] ; then
+ echo "This script should not be called if DFI=$DFI"
+ exit 1
+fi
+
+# Consistency check
+NPROC_IO=${NPROC_IO:-0}
+if [ $IO_SERVER = yes -a $NPROC_IO -eq 0 ] ; then
+  echo "IO server requested, but without any IO procs. Set NPROC_IO in Env_submit"
+fi
+
+########################
+CFNHWF="hiwif"
+CFPATH="ICMSH"
+#######################
+
+# Environment
+export DR_HOOK=1
+
+# Clean cycle directory for old forecast files and listener file
+rm -f $WRK/fc_aborted
+rm -f $ARCHIVE/${CFPATH}${CNMEXP}+*
+rm -f $ARCHIVE/PF${CNMEXP}${DOMAIN}+*
+rm -f $ARCHIVE/AROMOUT_.*.lfi
+
+NCONF=001	         	# IFS configuration
+LSLAG=".TRUE."          # SL Advection
+NFOST=0                 # Setings for Linear/Quadratic grid
+GRID_TYPE_LCQ=".FALSE." # Switch  to enable quadratic grid computations
+LL=00
+
+case $GRID_TYPE in
+  "LINEAR" )
+;;
+  "QUADRATIC" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+  "CUBIC" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+  "CUSTOM" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+*)
+  echo "Wrong grid type $GRID_TYPE"
+  exit 1
+;;
+esac
+echo ' TSTEP='$TSTEP
+
+#
+# Setup SURFEX files if applicable
+#
+if [ $SURFACE = "surfex" ] ; then
+
+  lpertsurf=.FALSE.
+
+  # Copy namelist
+  NAMELIST=$WRK/$WDIR/namelist_sfx_dfi
+  Get_namelist sfx_dfi
+  sed -e "s/NSTEP_DUMP_STATE=NSTEP_DUMP_STATE/NSTEP_DUMP_STATE=-1/" \
+      -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+      -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+  "$NAMELIST" > EXSEG1.nam
+
+  # Copy the surfex file
+  if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+    cp $WRK/fc_start_sfx TEST.lfi
+    cp $CLIMDIR/PGD.lfi .
+  else
+    ln -sf $CLIMDIR/Const.Clim.sfx Const.Clim.sfx
+    ln -sf $WRK/fc_start_sfx ICMSH${CNMEXP}INIT.sfx
+  fi
+
+  ln -sf $CLIMDIR/*.bin .
+fi
+
+# DFI namelist settings
+TAUP=$( expr ${TAUS-10800} \* 4)
+TAUC=$( expr ${TAUS-10800} \* 2)
+RTDFI=$TSTEP
+LDIVONLY=${LDIVONLY-".FALSE."}
+NSTDFI=`expr ${TSPAN-7200} / 2 / $TSTEP + 1 `
+
+# Boundary file and interval
+BDFILE=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+LBDINT=$( expr $BDINT \* 3600)
+
+# Generating the NHISTS=WRITELIST and NSHISTS=WRITESLIST arrays needed 
+# in namelists
+
+NRAZTSLIST=$( perl -S Output_freq.pl NRAZTS )
+WRITELIST="-1,0"
+WRITESLIST="0"
+N1SFXHIS=0
+
+# Forecast settings shared between Forecast and 4DV[screen|minim|traj]
+. forecast_model_settings.sh
+
+# Surfex output format
+if [ $SURFEX_OUTPUT_FORMAT == "lfi" ] ; then
+  LFMWRIT=.TRUE.
+  LFMREAD=.TRUE.
+  LFAPGD=.FALSE.
+else
+  LFMWRIT=.FALSE.
+  LFMREAD=.FALSE.
+  LFAPGD=.TRUE.
+fi
+
+#  Get namelist name
+NAMELIST=$WRK/$WDIR/namelist_dfi
+Get_namelist dfi $NAMELIST
+
+# Link RRTM files
+ln -sf "$HM_LIB"/const/rrtm_const/* .
+
+if [ $DFI == "idfi" ] ; then
+
+   #
+   # Run first part of the incremental DFI, F(fg) - fg
+   #
+   ICLOUDFRACTI="-1"
+   LCLOUDFRACTI=".FALSE."
+   ITKE="-1"
+
+   sed -e "s/BDINT/$TAUS/" \
+       -e "s/LLINC/.TRUE./" \
+       -e "s/N1SFXHIS=1/N1SFXHIS=0/" \
+       -e "s/WRITESLIST/$WRITESLIST/" \
+       -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=$N1SFXHIS/g" \
+       -e "s/WRITELIST/$WRITELIST/" \
+       -e "s/NRAZTSLIST/$NRAZTSLIST/" \
+       -e "s/ZNEN1/$ZNEN1/g" \
+       -e "s/ZNEN2/$ZNEN2/g" \
+       -e "s/ZNEK0/$ZNEK0/g" \
+       -e "s/ZNEK1/$ZNEK1/g" \
+       -e "s/ZNRADFR/$ZNRADFR/g" \
+       -e "s/NBPROC/$NPROC/g" \
+       -e "s/NPROCX/$NPROCX/g" \
+       -e "s/NPROCY/$NPROCY/g" \
+       -e "s/TAUS=TAUS/TAUS=$TAUS/g" \
+       -e "s/TAUP=TAUP/TAUP=$TAUP/g" \
+       -e "s/TAUC=TAUC/TAUC=$TAUC/g" \
+       -e "s/RTDFI=RTDFI/RTDFI=$RTDFI/g" \
+       -e "s/NSTDFI=NSTDFI/NSTDFI=$NSTDFI/g" \
+       -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+       -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+       -e "s/ITKE/$ITKE/g" \
+       -e "s/LDIVONLY=LDIVONLY/LDIVONLY=$LDIVONLY/g" \
+       -e "s/LBIAS=LBIAS/LBIAS=.TRUE./g" \
+       -e "s/LINCR=LINCR/LINCR=.FALSE./g" \
+       -e "s/LEQLIMSAT=LEQLIMSAT/LEQLIMSAT=.FALSE./g" \
+       -e "s/NFRPOS=NFRPOS/NFRPOS=1/g" \
+       -e "s/NFPOS=NFPOS/NFPOS=0/g" \
+       -e "s/NPOSTS=NPOSTS/NPOSTS=0/g" \
+       -e "s/=LFMWRIT/=$LFMWRIT/g" \
+       -e "s/=LFMREAD/=$LFMREAD/g" \
+       -e "s/=LFAPGD/=$LFAPGD/g" \
+       -e "s/NCONF=NCONF/NCONF=$NCONF/g" \
+       -e "s/CNMEXP=CNMEXP/CNMEXP=\"$CNMEXP\"/g" \
+       -e "s/CUSTOP=CUSTOP/CUSTOP=\"h$LL\"/g" \
+       -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+       -e "s/LSLAG=LSLAG/LSLAG=$LSLAG/g" \
+       -e "s/=LGRADSP/=$lgradsp/g" \
+       -e "s/=LUNBC/=$lunbc/g" \
+       $NAMELIST > fort.4
+
+   Cat_logs fort.4
+
+   #
+   # Link initial and boundary files 
+   #
+
+   ln -sf $WRK/first_guess_dfi ICMSH${CNMEXP}INIT
+   ln -sf $BDFILE               ELSCF${CNMEXP}ALBC000
+   ln -sf $BDFILE               ELSCF${CNMEXP}ALBC999
+
+   #
+   # Execute
+   #
+
+   $MPPEXEC $BINDIR/$MODEL || exit
+   
+   Cat_logs NODE.001_01
+
+   #
+   # Store the result
+   #
+
+   mv ICMSH${CNMEXP}+0000 $WRK/ICMSHHARMBIAS
+   ln -s $WRK/ICMSHHARMBIAS .
+
+fi
+
+
+#
+# Run second part of the incremental DFI,  F(an) + ( F(fg) - fg )
+# or full DFI, F(an) or F(fg)
+#
+
+if [ $DFI == "idfi" ] ; then
+   LINCR=.TRUE.
+else
+   LINCR=.FALSE.
+fi
+
+is_coldstart=$( cat $WRK/is_coldstart )
+if [ $is_coldstart != "yes" -a "${INITTKE-yes}" = yes ]; then
+   ITKE="1"
+else
+   ITKE="-1"
+fi
+
+if [ $is_coldstart != "yes" -a "${INITCLOUDFRACTI-yes}" = yes -a $PHYSICS = "arome" ]; then
+   ICLOUDFRACTI="1"
+   LCLOUDFRACTI=".TRUE."
+else
+   ICLOUDFRACTI="-1"
+   LCLOUDFRACTI=".FALSE."
+fi
+
+sed -e "s/BDINT/$TAUS/" \
+    -e "s/LLINC/.TRUE./" \
+    -e "s/N1SFXHIS=1/N1SFXHIS=0/" \
+    -e "s/WRITESLIST/$WRITESLIST/" \
+    -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=$N1SFXHIS/g" \
+    -e "s/WRITELIST/$WRITELIST/" \
+    -e "s/NRAZTSLIST/$NRAZTSLIST/" \
+    -e "s/ZNEN1/$ZNEN1/g" \
+    -e "s/ZNEN2/$ZNEN2/g" \
+    -e "s/ZNEK0/$ZNEK0/g" \
+    -e "s/ZNEK1/$ZNEK1/g" \
+    -e "s/ZNRADFR/$ZNRADFR/g" \
+    -e "s/NBPROC/$NPROC/g" \
+    -e "s/NPROCX/$NPROCX/g" \
+    -e "s/NPROCY/$NPROCY/g" \
+    -e "s/TAUS=TAUS/TAUS=$TAUS/g" \
+    -e "s/TAUP=TAUP/TAUP=$TAUP/g" \
+    -e "s/TAUC=TAUC/TAUC=$TAUC/g" \
+    -e "s/RTDFI=RTDFI/RTDFI=$RTDFI/g" \
+    -e "s/NSTDFI=NSTDFI/NSTDFI=$NSTDFI/g" \
+    -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+    -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+    -e "s/ITKE/$ITKE/g" \
+    -e "s/LDIVONLY=LDIVONLY/LDIVONLY=$LDIVONLY/g" \
+    -e "s/LBIAS=LBIAS/LBIAS=.FALSE./g" \
+    -e "s/LINCR=LINCR/LINCR=$LINCR/g" \
+    -e "s/LEQLIMSAT=LEQLIMSAT/LEQLIMSAT=.TRUE./g" \
+    -e "s/NFRPOS=NFRPOS/NFRPOS=1/g" \
+    -e "s/NFPOS=NFPOS/NFPOS=0/g" \
+    -e "s/NPOSTS=NPOSTS/NPOSTS=0/g" \
+    -e "s/=LFMWRIT/=$LFMWRIT/g" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/NCONF=NCONF/NCONF=$NCONF/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"$CNMEXP\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h$LL\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=$LSLAG/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    $NAMELIST > fort.4
+
+Cat_logs fort.4
+
+#
+# Link initial and boundary files 
+#
+
+rm -f ICMSH${CNMEXP}INIT ELSCF*
+
+ln -sf $WRK/fc_start ICMSH${CNMEXP}INIT
+ln -sf $BDFILE       ELSCF${CNMEXP}ALBC000
+ln -sf $BDFILE       ELSCF${CNMEXP}ALBC001
+
+#
+# Execute
+#
+
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+# Archive result
+mv ICMSH${CNMEXP}+0000 $ARCHIVE/ICMSH${CNMEXP}DFI
+
+# Change the link to fc_start
+ln -sf  $ARCHIVE/ICMSH${CNMEXP}DFI  $WRK/fc_start
+ls -l $WRK/fc_start
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0

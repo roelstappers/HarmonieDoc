@@ -1,0 +1,103 @@
+#!/bin/ksh 
+
+cd $HM_DATA
+
+
+set -x
+set -e
+###
+#######################################################################
+#     COSMO LEPS Procedure for clustering
+#     Author: Andrea Montani
+#     Last Update: 17.04.2013
+#######################################################################
+########################################################################
+###
+### this job will normally run in the morning of day "n" to make
+### the cluster analysis of 2 EPS (00--12 configuration):
+### the younger one (the first to be considered) started at 12UTC of day "n-1",
+### the older one started at 00UTC of day "n-1".
+### Therefore, startdate must be TODAY -1 at 12UTC
+### IL: test: only use 00 and run HarmonEPS at 06, so startdate = TODAY at 00 
+########################################################################
+###
+###
+###
+bdcycle=$( grep BDCYCLE $WRK/bdstrat_cluster | perl -pe 's/(.*) ((\d){1,})/$2/' )
+hh_offset=$( grep HH_OFFSET $WRK/bdstrat_cluster | perl -pe 's/(.*) ((\d){1,})/$2/' )
+offset=$(( bdcycle + hh_offset ))
+  
+  #HH=$( mandtg -hour $DTG )
+  #H=$((10#$HH))
+  #if [ $H -ge 00 -a $H -lt 06 ] ; then
+    #let offset=12+$H
+  #elif [ $H -ge 06 -a $H -lt 18 ] ; then
+    #let offset=$H
+  #elif [ $H -ge 18 -a $H -lt 24 ] ; then
+    #let offset=$H-12
+  #fi
+#
+  dtgBoundary=$( mandtg $DTG + -$offset )
+  echo "dtgBoundary is $dtgBoundary"
+
+NMEMBER=$( echo $ENSMSELX | perl -pe '@_=split(/:/) ; pop(@_) ; $_=scalar(@_)'; )
+
+startdate=$( mandtg -date $dtgBoundary )
+starttime=$( mandtg -hour $dtgBoundary )
+#steps=2
+steps=1
+inchours=12
+step=0
+BASEDIR=$WRK/cluster
+###
+mkdir -p $BASEDIR/output
+cd       $BASEDIR/output
+/bin/rm -f fort.*
+
+#
+# loop on the dates to generate input file (fort.99)
+#
+echo $NMEMBER                           > fort.99
+set +e
+while [ $step -lt $steps ] ; do
+  inc=`expr "$inchours" \* "$step" `
+  fulldata=`dateincr -h  "$startdate$starttime" -$inc`
+  mydata=`echo $fulldata |cut -c 1-8`
+  mytime=`echo $fulldata |cut -c 9-10`
+  lag=`expr "$inchours" \* "$step" `
+  STEP1=$(( 24 + lag + hh_offset ))
+  STEP2=$(( 36 + lag + hh_offset ))
+#
+  ln -sf $WRK/cluster_$mydata$mytime.CF $mydata$mytime'_ctrl'
+  ln -sf $WRK/cluster_$mydata$mytime.PF $mydata$mytime'_pert'
+
+  echo $mydata$mytime'_ctrl' >> fort.99
+  echo $mydata$mytime'_pert' >> fort.99
+  echo 2 >> fort.99
+  echo $STEP1 >> fort.99
+  echo $STEP2 >> fort.99
+  echo $lag >> fort.99
+  echo 2 >> fort.99
+  echo 925 >> fort.99
+  echo 850 >> fort.99
+#
+  step=`expr $step + 1`
+done
+
+###
+### run the code and copy output files
+### 
+### "set -e" means "stop if there is an error"
+###
+set -e
+$BINDIR/cluster
+\cp fort.90 $BASEDIR/output/$startdate$starttime'_ope.lis'
+\cp fort.95 $BASEDIR/output/$startdate$starttime'_clst_details.lis'
+
+cp fort.90 $WRK/cluster.txt
+
+
+#
+# END OF JOB
+#
+#######################################################################

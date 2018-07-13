@@ -1,0 +1,735 @@
+#!/bin/bash
+
+#
+#-------------------------------
+# Extract ECMWF data from MARS
+#
+# Usage: MARS_get_bd -c COMMAND -d DATE -h HOUR -l LL [ -s STREAM ]
+#
+# -c COMMAND       RETRIEVE|STAGE|PREFETCH
+#
+# -f FILE          MARS request file
+#
+# -d DATE
+#    DATE or /DATE1/DATE2/.../DATEN or DATESTART/to/DATEEND/by/STEP  if $COMMAND=STAGE
+#
+# -h HH
+#    HH or HH1/HH2/.../HHN or HOURSTART/to/HOUREND/by/STEP  if $COMMAND=STAGE
+#
+# -l LL
+#    LL or LLSTART/to/LLEND/by/STEP if $COMMAND=STAGE
+#
+# -s STREAM, optional
+#
+# -t TARGET
+#
+#
+#
+#-------------------------------
+
+function set_MARS_param {
+
+ SFCTYPE=AN
+ DATABASE=marsod
+ DATABASE_ML=marsod
+
+ case $BDSTRATEGY in 
+  enda)
+
+   #
+   # EDA case
+   #
+
+   if [ "$DTG" -lt 2009010100 ]; then
+    if [ $1 == "upper_air" ] ; then
+      EXPVER=1
+      CLASS=OD
+      TYPE=FC
+    else
+      EXPVER=EX4L
+      CLASS=RD
+      TYPE=PF
+      STREAM=ENFO
+    fi
+   elif [ "$DTG" -le 2010062118 -a "$DTG" -gt 2009123000 ]; then
+      EXPVER=47
+      STREAM=ENDA
+      CLASS=OD
+      TYPE=$TYPE
+   elif [ "$DTG" -le 2013111900 ]; then
+      EXPVER=1
+      STREAM=ENDA
+      CLASS=OD
+      TYPE=$TYPE
+   else
+      EXPVER=1
+      STREAM=ELDA
+      CLASS=OD
+      TYPE=$TYPE
+      DLON=0.18
+      DLAT=0.18
+   fi
+   ;;
+
+  eps_ec)
+
+   #
+   # Old style ENS case
+   #
+   exit 1
+
+   # expver=frld, class="rd", STREAM=ENFO (Peride: 10.06.2012 - 28.06.2012)
+   EXPVER=${MARS_EXPVER-frld}
+   STREAM=ENFO
+   CLASS=RD
+   TYPE=CF
+   [ $ENSCTRL -gt 0 ] && TYPE=PF
+   SFCTYPE=$TYPE
+   ;;
+
+  eps_ec_oper)
+
+   #
+   # ENS case
+   #
+
+   EXPVER=1
+   STREAM=ENFO
+   CLASS=OD
+   TYPE=CF
+   if [ $ENSCTRL -gt 0 ] ; then
+    TYPE=PF
+    DATABASE_ML="fdb5 prod"
+   fi
+   SFCTYPE=$TYPE
+   if [ "${DATE}${HH}" -ge 2016030800 ]; then
+    DLON=0.18
+    DLAT=0.18
+   else
+    DLON=0.32
+    DLAT=0.32
+   fi
+   ;;
+
+  era)
+
+   #
+   # ERA interim data
+   #
+
+   CLASS=EI
+   EXPVER=1
+   TYPE=$TYPE
+   STREAM=OPER
+   DLON=0.75
+   DLAT=0.75
+   DATABASE=marser
+   DATABASE_ML=marser
+   ;;
+
+  e40)
+
+   #
+   # ERA40 data
+   #
+
+   CLASS=E4
+   EXPVER=1
+   TYPE=$TYPE
+   STREAM=OPER
+   DLON=1.25
+   DLAT=1.25
+   ;;
+
+  *)
+
+   #
+   # Standard HIGHRES case
+   #
+
+   CLASS=OD
+   EXPVER=1
+   TYPE=$TYPE
+
+   if [ "${DATE}${HH}" -ge 2016030800 ]; then
+    DLON=0.09
+    DLAT=0.09
+   elif [ "${DATE}${HH}" -ge 2010012606 ]; then
+    DLON=0.15
+    DLAT=0.15
+   elif [ "${DATE}${HH}" -ge 2006020106 ]; then
+    DLON=0.25
+    DLAT=0.25
+   else
+    DLON=0.50
+    DLAT=0.50
+   fi
+
+   #
+   # Extract Boundary project data (SCDA)
+   # at 06 and 18 UTC OPER else
+   #
+
+   if [ "$STREAM" == "" ] ; then
+    if [ $HH -eq 06 -o $HH -eq 18 ] ; then
+      STREAM=SCDA
+    else
+      STREAM=OPER
+    fi
+   fi
+
+   ;;
+
+  esac
+
+}
+
+#
+#-------------------------------
+#
+
+function get_nlev {
+
+# Set correct number of vertical levels archived in MARS
+# depending on CLASS,STREAM,EXPVER
+
+export MARS_NLEV=0
+
+case $CLASS in
+
+ OD)
+
+  # Operational data
+  case $STREAM in
+   OPER|SCDA)
+    if [ $DTG -ge 2013062506 ] ; then
+     MARS_NLEV=137
+    elif [ $DTG -ge 2006020206 ] ; then
+     MARS_NLEV=91
+    else
+     MARS_NLEV=60
+    fi
+   ;;
+   ENFO)
+     MIN_MARS_LEV=13
+     MARS_NLEV=91
+   ;;
+   ENDA|ELDA)
+   # Ensemble data assimilation 
+    if [ $DTG -ge 2013062506 ] ; then
+     MARS_NLEV=137
+    elif [ $DTG -ge 2006020206 ] ; then
+     MARS_NLEV=91
+    else
+     MARS_NLEV=62
+    fi
+    ;;
+   *)
+    echo "Cannot handle NLEV settings for STREAM=$STREAM"
+    exit 1
+    ;;
+  esac
+ ;;
+
+ RD)
+  # Selected RD experiments, for e.g. EPS runs
+  if [ $STREAM=ENFO -a $CLASS=RD  ] ; then
+   case $EXPVER in
+    fsht|frld)
+     MARS_NLEV=62
+    ;;
+    *)
+     MARS_NLEV=91
+    ;;
+   esac
+  fi
+
+ ;;
+
+ EI|E4)
+   # ERA interim / ERA40
+    MARS_NLEV=60
+ ;;
+
+ *)
+  echo "Cannot handle NLEV settings for CLASS=$CLASS"
+  exit 1
+ ;;
+
+esac
+
+if [ $MARS_NLEV -eq 0 ] ; then
+ echo "MARS_get_bd did not return any useful number of levels, please check your MARS request and correct"
+ exit 1
+fi
+
+}
+
+#
+#-------------------------------
+#
+
+unset SOURCE
+  TARGET=UNDEFINED
+    DATE=UNDEFINED
+      HH=UNDEFINED
+      LL=UNDEFINED
+      K=0
+ COMMAND=RETRIEVE
+  STREAM=""
+    FILE=marsreq$$
+ENSMBR=${ENSMBR--1}
+[ "$ENSBDMBR" ] && ENSMBR=$ENSBDMBR
+MARS_GET_CLUSTER=${MARS_GET_CLUSTER:-no}
+MIN_MARS_LEV=1
+
+while getopts c:f:d:h:i:l:m:s:t:k: opt; do
+   case $opt in
+      c) COMMAND=$OPTARG ;;
+      f)    FILE=$OPTARG ;;
+      d)    DATE=$OPTARG ;;
+      h)      HH=$OPTARG ;;
+      l)      LL=$OPTARG ;;
+      m)  ENSMBR=$OPTARG ;;
+      i)  SOURCE=$OPTARG ;;
+      s)  STREAM=$OPTARG ;;
+      t)  TARGET=$OPTARG ;;
+      k)      K=$OPTARG ;;
+   esac
+done
+
+if [ $TARGET == UNDEFINED -o $DATE == UNDEFINED -o $HH == UNDEFINED -o $LL == UNDEFINED ]; then
+  echo "Usage: $0 -c COMMAND -d DATE -h HOUR -l LL [ -o FILE ] [ -s STREAM ]"
+  exit
+fi
+
+#
+# LL might be of the form 00/06/12/18 if called with -c STAGE
+# Check if it is numeric
+#
+
+if [ ! -z "${LL##*[!0-9]*}" ] ;then
+ if [ $LL -eq 0 ] ; then
+   TYPE=AN
+ else
+   TYPE=FC
+ fi
+else
+ TYPE=FC
+fi
+
+if [ ! -z "${ENSMBR##*[!0-9]*}" ] ;then
+ if [ $ENSMBR -eq 0 ] ; then
+   ENSCTRL=0
+ else
+   ENSCTRL=1
+ fi
+else
+ ENSCTRL=1
+fi
+
+
+if [ "$COMMAND" == RETRIEVE -o "$COMMAND" == PREFETCH ] ; then
+
+   MARS_COMMAND=RETRIEVE
+
+   #
+   # Find proper boundary domain
+   #
+
+   $BINDIR/domain_prop_grib_api $CLIMDIR/m$MM -f -MAX_EXT > $WRK/foo$$ || exit
+
+   EAS=$( tail -1 $WRK/foo$$ | head -1 | sed 's/ //g' )
+   NOR=$( tail -2 $WRK/foo$$ | head -1 | sed 's/ //g' )
+   WES=$( tail -3 $WRK/foo$$ | head -1 | sed 's/ //g' )
+   SOU=$( tail -4 $WRK/foo$$ | head -1 | sed 's/ //g' )
+
+   rm -f $WRK/foo$$
+
+else
+
+  MARS_COMMAND=$COMMAND
+
+fi
+
+
+################################################################
+################################################################
+
+
+#
+# Determine if surface data should be extracted
+# Set MARS_FETCH_SURF_HOUR in sms/config_exp.h to
+# eg. MARS_FETCH_SURF_HOUR=00:03:06 to extract for
+# some forecast lengths only
+#
+
+KK=`perl -e "printf('%2.2i', '$K')"`
+MARS_FETCH_SURF_HOUR=${MARS_FETCH_SURF_HOUR-ALL}
+if [ $SIMULATION_TYPE == "climate" -o $KK -eq 0 ] ; then
+ MARS_GET_SURFACE=yes
+elif [ $MARS_GET_CLUSTER == yes ] ; then
+ MARS_GET_SURFACE=no
+elif [[ $MARS_FETCH_SURF_HOUR =~ $KK ]] || [[ $MARS_FETCH_SURF_HOUR == "ALL" ]] ; then
+ MARS_GET_SURFACE=yes
+else
+ MARS_GET_SURFACE=no
+fi
+
+if [ $MARS_GET_SURFACE == "yes" ] ; then
+
+ #
+ # Surface forecast parameters
+ #
+
+ set_MARS_param
+
+ PARAM="32/33/39/40/41/42/139/141/170/172/183/198/235/236"
+
+ if [ $BDSTRATEGY == "enda" ]; then
+
+   cat >> $FILE <<EOF         
+$MARS_COMMAND,
+    NUMBER     = $ENSMBR,
+EOF
+
+ elif [ $BDSTRATEGY == "eps_ec" -o $BDSTRATEGY == "eps_ec_oper" ] ; then
+   cat >> $FILE <<EOF
+$MARS_COMMAND,
+    NUMBER     = 0,
+EOF
+
+ else
+
+   cat >> $FILE <<EOF
+$MARS_COMMAND,
+EOF
+
+ fi
+
+ if [ "$COMMAND" != RETRIEVE ] ; then
+  cat >> $FILE <<EOF         
+    DATABASE   = $DATABASE,
+EOF
+ fi
+
+ if [ $BDSTRATEGY == "eps_ec_oper" ] ; then
+   TARGETSURFPAR=$( echo $TARGET | perl -pe 's/(.*)(\.\[number\]$)/${1}.0/' )
+  SOURCESURFPAR0=$( echo $SOURCE | perl -pe 's/(.*)(\+\d{1,}(.*)$)/${1}+0${3}/' )
+   SOURCESURFPAR=$( echo $SOURCE | perl -pe 's/(.*)(\.\d{1,}$)/${1}.0/' )
+  SURFTYPE=CF
+ else
+   TARGETSURFPAR=$TARGET
+   SOURCESURFPAR=$SOURCE
+  SOURCESURFPAR0=$( echo $SOURCE | perl -pe 's/(.*)(\+\d{1,}(.*)$)/${1}+0${3}/' )
+  SURFTYPE=$TYPE
+ fi
+
+ cat >> $FILE <<EOF         
+    CLASS      = $CLASS,
+    TYPE       = $SURFTYPE,
+    STREAM     = $STREAM,
+    EXPVER     = $EXPVER,
+    PARAM      = $PARAM,
+    DATE       = $DATE,
+    TIME       = $HH,
+    STEP       = $LL,
+EOF
+
+ if [ "$COMMAND" == PREFETCH ] ; then
+
+  cat >> $FILE <<EOF         
+    AREA       = $NOR/$WES/$SOU/$EAS,
+    GRID       = $DLON/$DLAT,
+    ACCURACY   = 16,
+    TARGET     = "$TARGETSURFPAR",
+    PROCESS    = LOCAL,
+EOF
+
+ elif [ "$COMMAND" == RETRIEVE ] ; then
+
+  cat >> $FILE <<EOF         
+    GRID       = $DLON/$DLAT,
+    ACCURACY   = 16,
+    TARGET     = "$TARGET",
+    PROCESS    = LOCAL,
+EOF
+
+   # Use the prefetched file if it is available
+   # Make sure we have the 0 hour file ( for e.g. Z )
+   SOURCESURFPAR=$( echo $SOURCESURFPAR | perl -pe 's/prefetch_/prefetch_SFC_/' )
+
+   if [ "$SOURCESURFPAR" ] ; then
+    cat >> $FILE <<EOF         
+    SOURCE     = "$SOURCESURFPAR",
+EOF
+   else
+    cat >> $FILE <<EOF         
+   AREA       = $NOR/$WES/$SOU/$EAS,
+EOF
+   fi
+
+ fi
+
+ cat >> $FILE <<EOF         
+    LEVTYPE    = SFC 
+EOF
+
+ #
+ # SST and SIC, should always be analysis
+ # Only extract soiltype (43) from the operational suite
+ #
+
+ SURFPARAM="31/34"
+ [ $DTG -gt 2007060500 -a \
+  $BDSTRATEGY != "eps_ec" -a \
+  $BDSTRATEGY != "era" ] && SURFPARAM="${SURFPARAM}/43"
+
+ cat >> $FILE <<EOF         
+$MARS_COMMAND,
+    TYPE       = $SFCTYPE,
+    NUMBER     = $ENSMBR,
+    STEP       = 000,
+EOF
+
+ if [ "$COMMAND" != RETRIEVE ] ; then
+  cat >> $FILE <<EOF         
+    DATABASE   = $DATABASE,
+EOF
+ else
+  SOURCESURFPAR0=$( echo $SOURCESURFPAR0 | perl -pe 's/prefetch_/prefetch_SFC_/' )
+  cat >> $FILE <<EOF         
+    SOURCE     = "$SOURCESURFPAR0",
+EOF
+ fi
+
+ if [ "$COMMAND" == PREFETCH -o $COMMAND == RETRIEVE ] ; then
+  cat >> $FILE <<EOF         
+    TARGET     = "$TARGET",
+EOF
+ fi
+
+ cat >> $FILE <<EOF         
+    PARAM      = $SURFPARAM
+EOF
+
+fi
+
+################################################################
+################################################################
+
+if [ $MARS_GET_CLUSTER == yes ] ; then
+  MARS_GET_UPPER_AIR=no
+else
+  MARS_GET_UPPER_AIR=yes
+fi
+
+
+if [ $MARS_GET_UPPER_AIR == yes ] ; then
+
+ # Upper air parameters
+ set_MARS_param
+
+ if [ "$COMMAND" == RETRIEVE -o "$COMMAND" == PREFETCH ] ; then
+
+   # Select upper air parameters
+   PARAM_UPPER_AIR="Q/T/U/V/LNSP"
+
+ else
+
+  if [ $BDSTRATEGY == "eps_ec" ] ; then
+    PARAM_UPPER_AIR="Q/T/U/V/LNSP"
+  else
+    #PARAM_UPPER_AIR="Q/T/VO/D/LNSP"
+    PARAM_UPPER_AIR="Q/T/U/V/LNSP"
+  fi
+
+ fi
+
+ cat >> $FILE <<EOF         
+$MARS_COMMAND,
+EOF
+
+ if [ "$COMMAND" != RETRIEVE ] ; then
+ cat >> $FILE <<EOF         
+    DATABASE   = $DATABASE_ML,
+EOF
+ fi
+
+ if [ $BDSTRATEGY == "enda" -o \
+      $BDSTRATEGY == "eps_ec" -o \
+      $BDSTRATEGY == "eps_ec_oper" ] ; then
+
+cat >> $FILE <<EOF
+    NUMBER     = $ENSMBR,
+EOF
+
+ fi
+
+
+ if [ "$COMMAND" == PREFETCH ] ; then
+
+cat >> $FILE <<EOF         
+    AREA       = $NOR/$WES/$SOU/$EAS,
+    GRID       = $DLON/$DLAT,
+    ACCURACY   = 16,
+    TARGET     = "$TARGET",
+    PROCESS    = LOCAL,
+EOF
+
+ elif [ "$COMMAND" == RETRIEVE ] ; then
+
+   SOURCE=$( echo $SOURCE | perl -pe 's/prefetch_/prefetch_ML_/' )
+
+   cat >> $FILE <<EOF         
+    SOURCE     = "$SOURCE",
+    GRID       = $DLON/$DLAT,
+    ACCURACY   = 16,
+    TARGET     = "$TARGET",
+    PROCESS    = LOCAL,
+EOF
+
+ fi
+
+ #
+ # Model level fields
+ #
+
+ get_nlev
+
+ # Treat surface pressure separately if level 1 is not in the request
+ [[ $MIN_MARS_LEV -ne 1 ]] && PARAM_UPPER_AIR=$( echo $PARAM_UPPER_AIR | sed "s/\/LNSP//" )
+
+ cat >> $FILE <<EOF         
+    CLASS      = $CLASS,
+    TYPE       = $TYPE,
+    STREAM     = $STREAM,
+    EXPVER     = $EXPVER,
+    STEP       = $LL,
+    LEVTYPE    = ML,
+    LEVELIST   = $MIN_MARS_LEV/to/$MARS_NLEV,
+    PARAM      = $PARAM_UPPER_AIR
+EOF
+
+ if [ $MIN_MARS_LEV -ne 1 ] ; then
+
+  if [ "$COMMAND" != RETRIEVE ] ; then
+  cat >> $FILE <<EOF         
+    DATABASE   = $DATABASE_ML,
+EOF
+  fi
+
+  # Get the surface pressure
+  cat >> $FILE <<EOF         
+$MARS_COMMAND,
+    LEVELIST   = 1,
+    PARAM      = LNSP
+EOF
+ fi
+
+fi 
+
+################################################################
+################################################################
+
+if [ $MARS_GET_UPPER_AIR == yes -o $MARS_GET_SURFACE == yes ] ; then
+
+ #
+ # Get orography
+ #
+
+ LEVCMD="LEVELIST  = 1,"
+ DATABASE_ORO=$DATABASE_ML
+ TARGET_ORO=$TARGET
+ SOURCE_ORO=$SOURCESURFPAR0
+ SOURCE_ORO=$( echo $SOURCE_ORO | perl -pe 's/prefetch_SFC_/prefetch_ML_/' )
+ if [ $BDSTRATEGY == "enda" -a "$DTG" -lt 2009010100 ]; then
+  TYPE=PF
+ elif [ $BDSTRATEGY == "eps_ec" -o $BDSTRATEGY == "eps_ec_oper" ]; then
+  TYPE=CF
+  LEVCMD="LEVTYPE    = SFC,"
+  DATABASE_ORO=$DATABASE
+  TARGET_ORO=$( echo $TARGET | perl -pe 's/(.*)(\.\[number\]$)/${1}.0/' )
+  SOURCE_ORO=$( echo $SOURCE_ORO | perl -pe 's/(.*)(\+\d{1,}(.*)$)/${1}+0${3}/' )
+  SOURCE_ORO=$( echo $SOURCE_ORO | perl -pe 's/(.*)(\.\d{1,}$)/${1}.0/' )
+  SOURCE_ORO=$( echo $SOURCE_ORO | perl -pe 's/prefetch_ML_/prefetch_SFC_/' )
+ else
+  TYPE=AN
+ fi
+ cat >> $FILE <<EOF         
+$MARS_COMMAND,
+    $LEVCMD
+    TYPE       = $TYPE,
+    STEP       = 000,
+EOF
+
+ if [ "$COMMAND" != RETRIEVE ] ; then
+  cat >> $FILE <<EOF         
+    DATABASE   = $DATABASE_ORO,
+EOF
+ else
+  cat >> $FILE <<EOF         
+    SOURCE     = "$SOURCE_ORO",
+EOF
+ fi
+
+ if [ "$COMMAND" == PREFETCH -o $COMMAND == RETRIEVE ] ; then
+cat >> $FILE <<EOF         
+    TARGET     = "$TARGET_ORO",
+EOF
+ fi
+
+ if [ $BDSTRATEGY == "eps_ec_oper" ] ; then
+  cat >> $FILE <<EOF         
+    NUMBER     = 0,
+EOF
+ fi
+
+ cat >> $FILE <<EOF         
+    PARAM      = Z 
+EOF
+
+fi # if [ $MARS_GET_UPPER_AIR == yes -o $MARS_GET_SURFACE == yes ] 
+
+################################################################
+################################################################
+
+if [ $MARS_GET_CLUSTER == yes ] ; then
+
+ #
+ # Clustering data
+ #
+
+ set_MARS_param
+ TARGET=$WRK/cluster_$DATE$HH.$TYPE
+ cat >> $FILE <<EOF         
+$MARS_COMMAND,
+    DATABASE   = $DATABASE,
+    DATE       = $DATE,
+    TIME       = $HH,
+    AREA       = $NOR/$WES/$SOU/$EAS,
+    GRID       = $DLON/$DLAT,
+    ACCURACY   = 16,
+    TARGET     = "$TARGET",
+    PROCESS    = LOCAL,
+    CLASS      = $CLASS,
+    TYPE       = $TYPE,
+    STREAM     = $STREAM,
+    EXPVER     = $EXPVER,
+    NUMBER     = $ENSMBR,
+    STEP       = $LL,
+    LEVTYPE    = PL,
+    LEVELIST   = 925/850/700/500,
+    PARAM      = 129/131/132/133
+EOF
+
+
+ fi # $MARS_GET_CLUSTER == yes 
+
+if [ "$COMMAND" == RETRIEVE ] ; then
+ 
+   # Run the MARS request
+   mars $FILE || exit 
+   rm -f $FILE
+
+fi

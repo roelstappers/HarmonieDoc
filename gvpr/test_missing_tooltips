@@ -1,0 +1,5 @@
+
+# If length(tooltip) <=25 then it probably is just  #!/bin/bash
+BEG_G {print("\033[0;31mECFLOW Nodes with missing tooltip (length(tooltip) <=25:\033[0m")} 
+N[type=="ecflowtask" && length(tooltip)<=25]{print($)}
+

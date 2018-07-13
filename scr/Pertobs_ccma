@@ -1,0 +1,42 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+#-- Get Environmental variables
+. include.ass
+
+#--- Get Local vars
+typeset d_DB namel
+	d_DB_MINIM=$WRK/odb_ccma
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+d_PERTOBS=$WRK/$WDIR
+
+#-- Enter the work directory
+
+cd $d_PERTOBS
+
+#-- Perturbing the observations
+#--- ODB settings for 3dvar
+	export ODB_CMA=CCMA
+	export ODB_SRCPATH_CCMA=${d_DB_MINIM}/CCMA
+	export ODB_DATAPATH_CCMA=${d_DB_MINIM}/CCMA
+	export IOASSIGN=${d_DB_MINIM}/CCMA/IOASSIGN
+
+#-- Perturbing the observations
+cd ${d_DB_MINIM}/CCMA
+$MPPGL $BINDIR/PERTCMA $ENSMBR CCMA || \
+{ echo "problem with observation in minimisation" ; exit 1; }   
+
+# Normal exit
+cd $WRK
+rm -fr $WDIR
+trap - 0
+exit
+

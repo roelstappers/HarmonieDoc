@@ -1,0 +1,152 @@
+#!/bin/bash
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+
+#
+# Run the e927 configuration with fullpos
+#
+ while getopts h:i:o:v: opt; do
+                case $opt in
+                        h)      MLL=$OPTARG  ;;
+                        i)      INFILE=$OPTARG  ;;
+                        o)      OUTFILE=$OPTARG  ;;
+                        v)      VLEV=$OPTARG  ;;
+                esac
+ done
+
+MLL=`perl -e "printf('%3.3i', '$MLL')"` 
+CDTG=$( mandtg $DTG + $MLL )
+CM=`echo $CDTG | awk '{print substr($1,5,2)}'`
+
+# Input geometry
+
+echo $BDCLIM
+ln -sf  ${BDCLIM}/m$CM Const.Clim
+
+echo $CLIMDIR
+# Output geometry
+ln -sf  ${CLIMDIR}/m$CM const.clim.000
+
+# Link the host forecast
+ln -sf $INFILE ICMSH${CNMEXP}INIT
+
+# Build a list of 3D fields dependent on PHYSICS and availability
+# We only create extra fields at initial time
+
+CFP3DF="'TEMPERATURE','HUMI.SPECIFIQUE','WIND.U.PHYS','WIND.V.PHYS'"
+export NREQIN_GRAUPEL=0
+export NREQIN=0
+if [ $MLL -eq 0 ] ; then
+ NREQIN=1
+ CFP3DF="$CFP3DF,'LIQUID_WATER','SOLID_WATER','RAIN','SNOW','TKE'"
+ if [ $PHYSICS == "arome" ] ; then
+   CFP3DF="$CFP3DF,'GRAUPEL','CLOUD_FRACTI'" 
+   $BINDIR/gl_grib_api -l ICMSHHARMINIT 2> /dev/null 1> foo
+   grep -q S001GRAUPEL foo && NREQIN_GRAUPEL=1
+   grep -q S001CLOUD_FRACTI foo && NREQIN_CLOUD_FRACTI=1
+   rm -f foo
+ fi
+fi
+
+
+# Update namelist dependent on dynamics 
+if [ $DYNAMICS == "nh" ] ; then
+ CFP3DF="$CFP3DF,'PRESS.DEPART','VERTIC.DIVER'"
+fi
+
+#  Get namelist name
+NAMELIST=$WRK/$WDIR/namelist_e927
+Get_namelist e927 $NAMELIST
+
+# Check if Q input is in gridpoint or spectral space
+if [ $( $BINDIR/domain_prop_grib_api -f -QCHECK ICMSH${CNMEXP}INIT | grep -v Open ) -eq 1 ] ; then
+   YQ_NL_LGP='.FALSE.'
+   YQ_NL_LSP='.TRUE.'
+   LSPRT='.FALSE.'
+else
+   YQ_NL_LGP='.TRUE.'
+   YQ_NL_LSP='.FALSE.'
+   LSPRT='.TRUE.'
+fi
+
+# Check if input field is NH
+if [ $( $BINDIR/domain_prop_grib_api -f -CHECK_FIELD S001VERTIC.DIVER ICMSH${CNMEXP}INIT | grep -v Open ) -eq 1 ] ; then
+   LNHDYN='.TRUE.'
+else
+   LNHDYN='.FALSE.'
+fi
+
+# NAMPAR
+if [ $VLEV = BOUNDARIES ] ; then
+ export BDNLEV=$( $BINDIR/domain_prop_grib_api ICMSH${CNMEXP}INIT -f -NLEV | tail -1 )
+fi
+  NLEV=$( perl -S Vertical_levels.pl $VLEV NLEV )
+NRFP3S=$( perl -S Vertical_levels.pl $VLEV NRFP3S )
+
+sed -e "s/NBPROC/${NPROC}/g"  \
+    -e "s/NPROCX/${NPROCX}/g" \
+    -e "s/NPROCY/${NPROCY}/g" \
+    -e "s/NPROCY/${NPROCY}/g" \
+    -e "s/YQ_NL_LGP/${YQ_NL_LGP}/g" \
+    -e "s/YQ_NL_LSP/${YQ_NL_LSP}/g" \
+    -e "s/LSPRT=LSPRT/LSPRT=${LSPRT}/g" \
+    -e "s/LNHDYN=LNHDYN/LNHDYN=${LNHDYN}/g" \
+    -e "s/NRFP3S=NRFP3S/NRFP3S=${NRFP3S}/g" \
+    -e "s/CFP3DF=CFP3DF/CFP3DF=${CFP3DF}/g" \
+    -e "s/NCONF=NCONF/NCONF=001/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"$CNMEXP\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=1./g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    $NAMELIST > namprov
+
+# NAMFPD NAMFPG
+cat << EOF > namdim
+ &NAMFPD
+   NLAT=$NLAT, 
+   NLON=$NLON, 
+   RDELX=$GSIZE, 
+   RDELY=$GSIZE, 
+   NFPLUX=$NDLUXG, 
+   NFPGUX=$NDGUXG, 
+   RLONC=$LONC, 
+   RLATC=$LATC, 
+ /
+ &NAMFPG
+   NFPLEV=$NLEV,
+   NFPDISTRIB=1,
+   NFPMAX=$NSMAX,
+   NMFPMAX=$NMSMAX,
+   FPLAT0=$LAT0, 
+   FPLON0=$LON0, 
+EOF
+if [ $VLEV != BOUNDARIES ] ; then
+    echo FPVALH=$( perl -S Vertical_levels.pl $VLEV AHALF ) >> namdim
+    echo  FPVBH=$( perl -S Vertical_levels.pl $VLEV BHALF ) >> namdim
+fi
+echo ' /' >> namdim
+
+cat namdim namprov > fort.4
+
+Cat_logs fort.4
+
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+mv PF${CNMEXP}000+0000 $OUTFILE
+
+# normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

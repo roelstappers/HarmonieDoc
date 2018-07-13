@@ -1,0 +1,67 @@
+#!/bin/bash
+
+LOCKFILE=$WRK/lock.ecfsload
+trap "rm -f $LOCKFILE" 0
+
+lockfile.sh $LOCKFILE
+
+###############
+# To get bnd data from IFS ENS that are stored in ecfs, not MARS
+##############
+
+# Offset: age of boundaries
+offset=6
+mdtg=`mandtg $DTG + -$offset`
+echo "mdtg is $mdtg" 
+YY=$( mandtg -year  $mdtg )
+MM=$( mandtg -month  $mdtg )
+DD=$( mandtg -day  $mdtg )
+HH=$( mandtg -hour  $mdtg )
+
+#Three digits: 
+  ENSBDMBR3=`perl -e "printf('%03d', '${ENSBDMBR}')"`
+
+ecfile=eceps_${mdtg}_ens_${ENSBDMBR3}.mars
+splitfile=fc$YY$MM${DD}_$HH
+
+if [ $HH -eq 00 -o $HH -eq 12 ] ; then
+   expid=$MARS_EXPVER
+else
+   expid=$MARS_EXPVER2
+fi
+
+mkdir -p $HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbr${ENSMBR}
+cd $HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbr${ENSMBR}
+
+## Get the data from ecfs
+ecp ec:/hirlam/bnd/${expid}/${mdtg}/${ecfile} ${ecfile}
+if [ ! -f "$ecfile" ]
+then
+    echo "File $ecfile does not exists"
+    exit 1
+fi
+
+## Split the data into the format required
+grib_filter $HM_LIB/scr/EPS_bnd_filter ${ecfile}
+
+# cat topo on to all files
+let LLL=$LL+$offset
+FSTEP=0
+while [ $FSTEP -le $LLL ] ; do
+#Three digits: 
+  FFSTEP=`perl -e "printf('%03d', '${FSTEP}')"`
+  cat ${splitfile}+${FFSTEP} topo > topo_${splitfile}+${FFSTEP}
+  mv topo_${splitfile}+${FFSTEP} ${splitfile}+${FFSTEP}
+  let FSTEP=$FSTEP+$BDINT
+done
+
+## clean
+
+rm -f topo
+rm -f ${ecfile}
+
+rm -f $LOCKFILE
+
+trap - 0
+exit
+

@@ -1,0 +1,93 @@
+#!/bin/sh
+#-----------------------------------------------------
+#   Extract and create obs statistics from ODB
+# 
+#   This script links results form archive if not existing
+#
+#-----------------------------------------------------
+
+. header.sh
+
+ARCHIVE_OBSMON=$ARCHIVE_ROOT
+if [ "$OBSMON_EXP_ARCHIVE_ROOT" != "" ]; then
+  OBYY=$( mandtg -year   $DTGPP )
+  OBMM=$( mandtg -month  $DTGPP )
+  OBDD=$( mandtg -day    $DTGPP )
+  OBHH=$( mandtg -hour   $DTGPP )
+  ecfs=0
+  # Check if user wants an experiement from ECFS
+  echo "$OBSMON_EXP_ARCHIVE_ROOT" | grep 'ectmp:' >/dev/null 2>&1 && ecfs=1
+  if [ "$ecfs" -eq "0" ]; then
+    echo "$OBSMON_EXP_ARCHIVE_ROOT" | grep 'ec:' >/dev/null 2>&1 && ecfs=1
+  fi
+  if [ "$ecfs" -eq "0" ]; then
+    ARCHIVE_OBSMON=$OBSMON_EXP_ARCHIVE_ROOT/$OBYY/$OBMM/$OBDD/$OBHH
+  else
+    [ -d $WRK ] || mkdir -p $WRK
+    cd $WRK || exit 1
+    echo "User is monitoring ODB stored in ECFS, Copying odb_stuff.tar to $WRK and untarring"
+    ecp $OBSMON_EXP_ARCHIVE_ROOT/$OBYY/$OBMM/$OBDD/$OBHH/odb_stuff.tar .
+    tar -xvf odb_stuff.tar
+    ARCHIVE_OBSMON=$WRK
+  fi
+fi
+
+# Find the active bases
+OBSMON_SCR=$HM_LIB/util/monitor/scr/
+conf="$OBSMON_SCR/monitor.inc"
+if [ -f $conf ]; then
+  . $conf || exit 1
+  set_bases
+else
+  echo "Config file $conf not found."
+  exit 1
+fi
+
+for base in $bases; do
+
+  # Set baseroot  
+  case $base in
+    "ccma")
+      baseroot="odb_ccma"
+      BASE="CCMA"
+    ;;
+    "ecma")
+      baseroot="odbvar"
+      BASE="ECMA"
+    ;;
+    "ecma_sfc")
+      baseroot="odb_can"
+      BASE="ECMA"
+    ;;
+    *)
+     echo "Base $base not defined!"
+     exit 1
+    ;;
+  esac
+
+  [ -d $WRK ] || mkdir -p $WRK 
+  cd $WRK || exit 1
+
+  # Untar the ODB unless it already exists
+  if [ ! -s $WRK/$baseroot ]; then
+    if [ -f $ARCHIVE_OBSMON/${baseroot}.tar ]; then 
+      tar xvf $ARCHIVE_OBSMON/${baseroot}.tar
+    else
+      echo "$ARCHIVE_OBSMON/${baseroot}.tar does not exis!"
+      exit 1
+    fi
+  else
+    echo "$WRK/$baseroot already exists!"
+  fi
+done
+
+# Copy logfile from date cycle if not existing
+if [ -f $OBSMON_EXP_ARCHIVE_ROOT/log/HM_Date_${DTGPP}.html ]; then
+  if [ ! -f $ARCHIVE_ROOT/log/HM_Date_${DTGPP}.html ]; then
+    cp -p $OBSMON_EXP_ARCHIVE_ROOT/log/HM_Date_${DTGPP}.html $ARCHIVE_ROOT/log/HM_Date_${DTGPP}.html
+  fi
+fi
+
+# Normal exit
+trap - 0
+exit

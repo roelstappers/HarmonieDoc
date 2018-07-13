@@ -1,0 +1,62 @@
+#!/bin/sh
+#-----------------------------------------------------
+#   Update WebgraF
+# 
+#-----------------------------------------------------
+
+. header.sh
+
+export OBSMON_SCR=$HM_LIB/util/monitor/scr
+if [ "$EXP" == "" -o "$WRK" == "" -o "$HM_LIB" == "" -o "$DTGBEG" == "" -o "$DTGEND" == "" -o "$OBSMON_SCR" == "" ]; then
+  echo "The following environment variables are needed:"
+  echo "       EXP: $EXP"
+  echo "       WRK: $WRK"
+  echo "    HM_LIB: $HM_LIB"
+  echo "    DTGBEG: $DTGBEG"
+  echo "    DTGEND: $DTGEND"
+  echo "OBSMON_SCR: $OBSMON_SCR"
+  exit 1
+fi
+
+conf="$OBSMON_SCR/monitor.inc"
+if [ -f $conf ]; then
+  . $conf || exit 1
+ set_bases
+ set_obtypes
+else
+  echo "Config file $conf not found."
+  exit 1
+fi
+
+cd $WRK/obsmon || exit 1
+
+# Set WebgraF environment variables
+PROJECT=$EXP
+export WEBGRAF_BASE=$HM_LIB/util/monitor/WebgraF
+export WEBCALL="$WEBGRAF_BASE/bin/WebgraF -p $PROJECT -b $EXTRARCH/WebgraF"
+
+# Make webgraf interface
+$OBSMON_SCR/make_webgraf.sh $DTGBEG $DTGEND || exit 1
+
+# Update webgraf (must be done in serial after all process are finished)
+echo "Updating Webgraf"
+for base in $bases; do
+  echo "Updating base: $base"
+  cd $base || exit 1
+  for f in `ls -1 *.tar`; do
+    proj1=`echo $f | awk -F"_" '{print $1}'`
+    proj2=`echo $f | awk -F"_" '{print $2}'`
+    if [ "$proj2" == "ts" -o "$proj2" == "channels" -o "$proj2" == "profile" ]; then
+      proj="${proj1}_${proj2}"
+    else
+      proj=$proj1
+    fi
+    echo "$OBSMON_SCR/update_webgraf.sh $proj $f"
+    $OBSMON_SCR/update_webgraf.sh $proj $f || exit 1
+  done
+  cd .. || exit 1
+done
+ 
+# Normal exit
+trap - 0
+exit

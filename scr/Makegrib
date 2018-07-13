@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+# Interface to convert FA/lfi files to GRIB
+# 
+# Since grib_api doesn't deliver what's promised we
+# have to stick with the old gribex verion. 
+#
+# For those interested to work on GRIB2 encoding the 
+# grib_api version of gl is available when using Makegrib_grib_api
+#
+
+MAKEGRIB_VERSION=${MAKEGRIB_VERSION:-Makegrib_gribex}
+
+Makegrib_$MAKEGRIB_VERSION ${*} || exit 1

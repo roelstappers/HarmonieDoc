@@ -1,0 +1,77 @@
+#!/bin/bash
+
+#
+# Change geometry for a SURFEX input file for 4DVAR purposes
+#
+
+. header.sh
+
+cd "$WRK"
+WDIR=$(hostname)$$
+Workdir "$WDIR"
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+INFILE=$1
+OUTFILE=$2
+
+loop=1
+res=$( echo $ILRES | cut -d, -f$loop )
+
+
+# Link Ecoclimap cover files
+ln -sf $BDCLIM/*.bin .
+
+ln -sf ${CLIMDIR}/PGD.lfi .
+ln -sf $BDCLIM/PGD.lfi PGD_host.lfi
+
+if [ "$SURFEX_OUTPUT_FORMAT" == fa ]; then
+  ln -sf "$INFILE" INFILE.fa
+  conv sfxfa2lfi INFILE.fa INFILE.lfi || exit 1
+else
+  ln -sf $INFILE INFILE.lfi
+fi
+
+# Get SURFEX namelist
+NAMELIST=$WRK/$WDIR/namelist_prolog_prep
+Get_namelist prolog_prep $NAMELIST
+
+NDTG=$(mandtg $DTG + -1 )
+NYEAR=$(mandtg -year "$NDTG")
+NMONTH=$(mandtg -month "$NDTG")
+NDAY=$(mandtg -day "$NDTG")
+XTIME=$(mandtg -hour "$NDTG")
+XTIME=$(( 10#$XTIME * 3600 ))
+
+# Substitute namelist
+sed -e "s/CFILETYPE=CFILETYPE/CFILETYPE=\"LFI\"/g" \
+    -e "s/NMONTH=NMONTH/NMONTH=${NMONTH}/g" \
+    -e "s/NYEAR=NYEAR/NYEAR=${NYEAR}/g" \
+    -e "s/NDAY=NDAY/NDAY=${NDAY}/g" \
+    -e "s/XTIME=XTIME/XTIME=${XTIME}/g" \
+    "$NAMELIST" > OPTIONS.nam 
+
+# Run PREP
+#export DR_HOOK_NOT_MPI=1
+$MPPGL "$BINDIR"/PREP || exit
+
+# Cat logs
+Cat_logs OPTIONS.nam LISTING_PREP.txt
+
+if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+  mv SURFXINI.lfi  $WRK/${OUTFILE}
+else
+  MM_MAIN=$(mandtg -month "$DTG")
+  ln -sf $CLIMDIR/m$MM_MAIN m$MM_MAIN
+  conv sfxlfi2fa SURFXINI.fa SURFXINI.lfi m"$MM_MAIN" || exit 1
+  mv SURFXINI.fa  "$WRK"/${OUTFILE}
+fi
+   
+#
+# normal exit
+#
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

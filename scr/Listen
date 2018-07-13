@@ -1,0 +1,617 @@
+#!/bin/bash
+#
+############################################################################
+# Main listener                                                            #
+#                                                                          #
+# Listens to the model signalfile(s), and writes tasks for Listen2file     #
+#                                                                          #
+# Author: Trygve Aspelien (met.no)                                         #
+#                                                                          #
+############################################################################
+
+. header.sh
+. functions.ksh
+
+function check_sig_exist () {
+
+ # Loop until we have found any signalfile, abortfile
+ # or simply give up
+ signalfiles=$1
+
+ while [ true ] ; do
+
+  for signalfile in $signalfiles; do
+
+   # Wait for any signalfile to exist 
+   if [ -s "$signalfile" ] ; then
+     # echo "Signalfile $signalfile found"
+     break 2
+   fi
+
+  done
+
+  if [ -s "$abortfile" ]; then
+    echo "Forecast aborted, stop listening ..."
+    exit 1
+  fi
+
+  
+  sleep "$sleeptime"
+  elapsedtime=$(date +%s)
+  if [ "$elapsedtime" -gt "$timelimit" ]; then
+    echo "Ran out ouf patience. Time elapsed: $elapsedtime"
+    exit 1
+  fi
+
+ done
+
+}
+
+#############################################################################
+
+function check_sig_file () {
+
+ #
+ # Loop over given signalfiles
+ #
+
+ FC_STEP_MIN=-1
+
+ sigtype=$1
+ signalfiles=$2
+
+ found_all=1
+ for signalfile in $signalfiles; do
+
+  if [ -s "$abortfile" ]; then
+    echo "Forecast aborted, stop listening ..."
+    exit 1
+  fi
+
+  # Stop search if any signalfile is missing
+  if [ ! -s "$signalfile" ] ; then
+    found_all=0
+    break
+  fi
+
+  #echo "Signalfile $signalfile found"
+  FC_STEP_LONG=$( cat "$signalfile" )
+  # Set minimum first time
+  if [ $FC_STEP_MIN -eq -1 ]; then
+    FC_STEP_MIN=$FC_STEP_LONG
+  fi
+  # Adjust minimum if this length is less than previous value
+  [[ 10#$FC_STEP_LONG -lt 10#$FC_STEP_MIN ]] && FC_STEP_MIN=$FC_STEP_LONG
+
+ done
+
+ case $sigtype in 
+  HI)
+   FC_STEP_HI=$FC_STEP_MIN
+   FOUND_HI=$found_all
+  ;;
+  FP)
+   FC_STEP_FP=$FC_STEP_MIN
+   FOUND_FP=$found_all
+  ;;
+   *)
+   exit 1
+  ;;
+ esac
+
+}
+
+#############################################################################
+
+function waitfor () {
+    file=$1
+    now=$( date '+%s' )
+    mtime=$( stat --printf=%Y $file )
+    age=$(( now - mtime ))
+    while [ $age -lt $AGELIMIT ]; do
+	pause=$(( AGELIMIT + 1 - age ))
+	echo "$file too recent, sleeping $pause"
+	sleep $pause
+	now=$( date '+%s' )
+	mtime=$( stat --printf=%Y $file )
+	age=$(( now - mtime ))
+    done
+}
+
+#############################################################################
+
+
+cd "$WRK"
+WDIR=$(hostname)$$
+Workdir "$WDIR"
+
+listenfile="$WRK/listener.txt"
+
+trap "echo ABORTED >> $listenfile ; Trapbody $WDIR ; exit 1" 0
+
+#############
+# SETTINGS: #
+#############
+# Minimum file age before FAcat (for IO-server files)
+AGELIMIT=15
+# Patience in seconds
+patience=7200
+# Patience for a file that is supposed to exist
+maxwait=120
+# Sleep time between checks
+sleeptime=5
+# Which file the listener should listen to
+if [ "$IO_SERVER" = yes ] ; then
+ [ "$NPROC_IO" == "" ] && echo "You must set NPROC_IO" && exit
+ signalfiles_hi=""
+ signalfiles_fp=""
+ IO_PROC=1
+ while [ "$IO_PROC" -le "$NPROC_IO" ]; do
+   NIO_PROC=$(perl -e "printf('%6.6i',$IO_PROC)")
+   signalfiles_hi="$signalfiles_hi $WRK/forecast/io_serv.${NIO_PROC}.d/ECHIS"
+   signalfiles_fp="$signalfiles_fp $WRK/forecast/io_serv.${NIO_PROC}.d/ECHFP"
+   IO_PROC=$(( IO_PROC + 1 ))
+ done
+else
+ signalfiles_hi=$WRK/fc_signals
+ signalfiles_fp=$WRK/fp_signals
+fi
+abortfile=$WRK/fc_aborted
+
+# File types to handle
+export TYPE=""
+FILETYPES="his"
+LIST_HI=$(perl -S Output_freq.pl OUTLIST)
+echo "HISTORY FILES expected:$LIST_HI"
+LIST_SFX=""
+if [ "$SURFACE" == surfex ] ; then
+ FILETYPES="$FILETYPES sfx"
+ LIST_SFX=$(perl -S Output_freq.pl SFXLIST)
+ echo "SURFEX FILES expected:$LIST_SFX"
+ if [ "$SURFEX_LSELECT" = yes ] ; then 
+   FILETYPES="$FILETYPES sfxf"
+   LIST_SFXF=$(perl -S Output_freq.pl SFXFLIST)
+   echo "SURFEX FULL FILES expected:$LIST_SFXF"
+ fi
+fi
+LIST_FP=""
+if [ "$POSTP" == inline -o "$POSTP" == offline ] ; then
+ FILETYPES="$FILETYPES fp"
+ LIST_FP=$(perl -S Output_freq.pl POSTLIST)
+ echo "FULLPOS FILES expected:$LIST_FP"
+fi
+
+regfile="$WRK/registry_listen"
+mregfile="$WRK/registry_makegrib"
+
+#########################################################
+#########################################################
+
+# Starttime. Seconds since 1970
+starttime=$(date +%s)
+echo "Starting SMSMETER at $(date) based on signals from $signalfiles_hi"
+listenhour=$LL
+hourtext="hour"
+LLSET=$LL
+# If TFLAG=min we need to listen for the time step, and not the hour
+if [ "$TFLAG" == "min" ]; then
+  if [ "$TSTEP" -gt "0" ]; then
+    listenhour=$(( listenhour * 3600 / TSTEP ))
+    hourtext="time step"
+    LLSET=$(( LL * 3600 / TSTEP ))
+  else
+    echo "TSTEP is not gt 0: $TSTEP"
+    exit 1
+  fi
+fi
+$SMSMETER progress -1 -1 $listenhour
+FC_SMSMETER=-1
+
+[ -f $listenfile ] && rm $listenfile
+rm -f $WRK/Makegrib_*_*
+rm -f $WRK/FAcat_*_*
+
+timelimit=$(( starttime + patience ))
+elapsedtime=$(date +%s)
+[ "$elapsedtime" -gt "$timelimit" ] && echo "Ran out ouf patience. Time elapsed: $elapsedtime" && exit 1 
+
+# Check the existence of any signalfile
+check_sig_exist "$signalfiles_hi $signalfiles_fp"
+
+hourfound_fp=-1
+hourfound_sfx=-1
+hourfound_sfxf=-1
+hourfound_hi=-1
+
+FC_STEP_HI=$LLSET
+FC_STEP_SFX=$LLSET
+FC_STEP_SFXF=$LLSET
+FC_STEP_FP=$LLSET
+
+FOUND_HI=1
+FOUND_FP=1
+
+while [ $listenhour -gt 0 ] ; do
+
+  # Check the signal files
+  if [ ! -s $WRK/fc_complete ] ; then
+    check_sig_file HI "$signalfiles_hi" 
+    check_sig_file FP "$signalfiles_fp"
+  fi
+
+  done_anything=0
+
+  # Archive and write signal files for historic files from upper air and surface
+  for TYPE in $FILETYPES ; do
+      case $TYPE in
+        "his")
+          FC_STEP=$( echo $FC_STEP_HI | sed "s/ //g" )
+          hourfound=$hourfound_hi
+          FOUND=$FOUND_HI
+          LIST=$LIST_HI
+        ;;
+        "sfx")
+          FC_STEP=$( echo $FC_STEP_HI | sed "s/ //g" )
+          hourfound=$hourfound_sfx
+          FOUND=$FOUND_HI
+          LIST=$LIST_SFX
+        ;;
+        "sfxf")
+          FC_STEP=$( echo $FC_STEP_HI | sed "s/ //g" )
+          hourfound=$hourfound_sfxf
+          FOUND=$FOUND_HI
+          LIST=$LIST_SFXF
+        ;;
+        "fp")
+          FC_STEP=$( echo $FC_STEP_FP | sed "s/ //g" )
+          hourfound=$hourfound_fp
+          FOUND=$FOUND_FP
+          LIST=$LIST_FP
+        ;;
+        *)
+          echo "File type $TYPE is not implemented"
+          exit 1
+        ;;
+      esac
+
+    if [ "$hourfound" -lt "$FC_STEP" -a $FOUND -eq 1 ]; then
+
+      # Update SMSMETER
+      if [ "$FC_STEP" -gt $FC_SMSMETER ] ; then
+       $SMSMETER progress "$FC_STEP"
+       FC_SMSMETER=$FC_STEP
+       echo "SMSMETER: Forecast $hourtext $FC_STEP" 
+      fi
+
+      # Loop from last step found to this step in case some steps are in between
+      # and not caught by the listener
+      for FC_STEP_LOOP in $LIST; do
+
+        [[ 10#$FC_STEP_LOOP -gt 10#$FC_STEP ]] && break
+
+        FC_STEP4=$(perl -e "printf('%4.4i', '$FC_STEP_LOOP')")
+        if [ $TFLAG == "min" ] ; then
+          FC_STEP3=$(( FC_STEP_LOOP * TSTEP / 60 ))
+          FC_STEP3=$(perl -e "printf('%3.3i', '$FC_STEP3')")
+        else
+          FC_STEP3=$(perl -e "printf('%3.3i', '$FC_STEP_LOOP')")
+        fi 
+
+        echo "Process $TYPE for step $FC_STEP4"
+        FCDUMP=-1
+        if [ $SURFEX_LSELECT = "yes" ] ; then 
+          for F in $SURFEX_DUMP_STEP $LLDUMP ; do
+            [[ $F -eq $FC_STEP4 ]] && FCDUMP=$FC_STEP4
+          done
+        fi
+
+        RUNFACAT=0
+        FILEINS=""
+
+        case $TYPE in
+          "his")
+            if [ "$IO_SERVER" = yes ] ; then
+              check_match.pl $FULLFAFTIMES $FC_STEP3 && RUNFACAT=1
+              [[ "$POSTP" == "offline" ]] && RUNFACAT=1
+
+              while [ $( echo $FILEINS | wc | awk '{print substr($2,1)}' ) -eq 0 ] ; do
+               FILEINS=""
+               IO_PROC=1
+               while [ "$IO_PROC" -le "$NPROC_IO" ]; do
+                NIO_PROC=$(perl -e "printf('%6.6i',$IO_PROC)")
+                iosfile="$WRK/forecast/io_serv.${NIO_PROC}.d/ICMSH${CNMEXP}+$FC_STEP4"
+                FILESPEC=$( ls -1 $iosfile.speca.* 2>/dev/null | tr '\n' ' ' ) || FILESPEC=""
+                FILEGRID=$( ls -1 $iosfile.gridall 2>/dev/null ) || FILEGRID=""
+                FILEINS="$FILEINS $FILEGRID $FILESPEC"
+                IO_PROC=$(( IO_PROC + 1 ))
+               done
+              done
+              for FILE in $FILEINS ; do
+                waitfor $FILE
+              done 
+              FILEOUT=$ARCHIVE/ICMSH${CNMEXP}+$FC_STEP4
+            else
+              FILEINS=$ARCHIVE/ICMSH${CNMEXP}+$FC_STEP4
+              FILEOUT=$FILEINS
+            fi
+          ;;
+          "sfx")
+            if [ "$SURFEX_OUTPUT_FORMAT" == lfi ] ; then
+              FILEINS=$ARCHIVE/AROMOUT_.${FC_STEP4}.lfi
+              FILEOUT=$FILEINS
+            else
+              if [ "$IO_SERVER" = yes ] ; then
+                RUNFACAT=0
+                check_match.pl $SFXWFTIMES $FC_STEP3 && RUNFACAT=1
+                while [ $( echo $FILEINS | wc | awk '{print substr($2,1)}' ) -le 1 ] ; do
+                 FILEINS="$WRK/forecast/ICMSH${CNMEXP}+$FC_STEP4.sfx"
+                 IO_PROC=1
+                 while [ "$IO_PROC" -le "$NPROC_IO" ]; do
+                  NIO_PROC=$(perl -e "printf('%6.6i',$IO_PROC)")
+		          iosfile="$WRK/forecast/io_serv.${NIO_PROC}.d/ICMSH${CNMEXP}+$FC_STEP4.sfx"
+		          waitfor $iosfile
+                  FILEINS="$FILEINS $iosfile"
+                  IO_PROC=$(( IO_PROC + 1 ))
+                 done
+                done
+                FILEOUT=$ARCHIVE/ICMSH${CNMEXP}+$FC_STEP4.sfx
+              else
+                FILEINS=$ARCHIVE/ICMSH${CNMEXP}+$FC_STEP4.sfx
+                FILEOUT=$FILEINS
+              fi
+            fi
+          ;;
+          "sfxf")
+            if [ "$SURFEX_OUTPUT_FORMAT" == lfi ] ; then
+              echo "SURFEX_OUTPUT_FORMAT=lfi not handled for SURFEX_LSELECT=yes in Listen"
+              exit 1
+            else
+              if [ "$IO_SERVER" = yes ] ; then
+                 RUNFACAT=1
+                 check_match.pl $SFXFWFTIMES $FC_STEP3 && RUNFACAT=1
+                 while [ $( echo $FILEINS | wc | awk '{print substr($2,1)}' ) -le 1 ] ; do
+                  FILEINS="$WRK/forecast/ICMSHFULL+$FC_STEP4"
+                  IO_PROC=1
+                  while [ "$IO_PROC" -le "$NPROC_IO" ]; do
+                   NIO_PROC=$(perl -e "printf('%6.6i',$IO_PROC)")
+		          iosfile="$WRK/forecast/io_serv.${NIO_PROC}.d/ICMSH${CNMEXP}+$FC_STEP4.sfxf"
+		          waitfor $iosfile
+                   FILEINS="$FILEINS $iosfile"
+                   IO_PROC=$(( IO_PROC + 1 ))
+                  done
+                 done
+                 FILEOUT=$ARCHIVE/ICMSHFULL+$FC_STEP4.sfx
+              else
+                FILEINS=$ARCHIVE/ICMSHFULL+$FC_STEP4.sfx
+                FILEOUT=$FILEINS
+              fi
+            fi
+          ;;
+          "fp")
+            if [ "$IO_SERVER" = yes ] ; then
+              check_match.pl $PFFULLWFTIMES $FC_STEP3 && RUNFACAT=1
+              while [ $( echo $FILEINS | wc | awk '{print substr($2,1)}' ) -eq 0 ] ; do
+               FILEINS=""
+               IO_PROC=1
+               while [ "$IO_PROC" -le "$NPROC_IO" ]; do
+                NIO_PROC=$(perl -e "printf('%6.6i',$IO_PROC)")
+		        iosfile="$WRK/forecast/io_serv.${NIO_PROC}.d/PF${CNMEXP}${DOMAIN}+${FC_STEP4}.hfp"
+		        waitfor $iosfile
+                FILEINS="$FILEINS $iosfile"
+                IO_PROC=$(( IO_PROC + 1 ))
+               done
+              done
+              FILEOUT=$ARCHIVE/PF${CNMEXP}${DOMAIN}+${FC_STEP4}
+            else
+              FILEINS=$ARCHIVE/PF${CNMEXP}${DOMAIN}+${FC_STEP4}
+              FILEOUT=$FILEINS
+            fi
+          ;;
+          *)
+            echo "File type $TYPE is not implemented"
+            exit 1
+          ;;
+        esac
+
+        # If we do not create GRIB files we gather all FA files
+        if [ "$CONVERTFA" == "no" -a "$IO_SERVER" == yes ] ; then
+          RUNFACAT=1
+        fi
+
+        # Check registry file if the file has been processed before and listener is restarted
+        regfile="$WRK/registry_listen"
+        do_cmd=0
+        if [ -f "$regfile" ]; then
+          grep "#${FILEOUT}#" "$regfile" || do_cmd=1
+        else
+          do_cmd=1
+        fi
+
+        if [ $do_cmd -eq 1 ]; then
+
+         done_anything=1
+
+         if [ "$IO_SERVER" = no -o "$SURFEX_OUTPUT_FORMAT" = lfi -a "$TYPE" = sfx ] ; then
+          # When we write with IO server the triggering is done when next IO step starts
+          # so there is no need for checking
+          for FILEIN in $FILEINS ; do
+            wait_t=0
+            while [ ! -s "$FILEIN" ] ; do
+              sleep 5
+              wait_t=$(( wait_t + 1 ))
+              [ $wait_t -gt $maxwait ] && { echo "No file $FILEIN found on disk, exit" ; exit 1 ; }
+            done
+            echo "File for $FILEIN $hourtext $FC_STEP found at $(date)"
+
+            MD5SUM2=$( md5sum "$FILEIN" | cut -d" " -f1 )
+            MD5SUM1=0
+
+            #
+            # Wait until the file status has settled
+            #
+
+            wait_t=0
+            while [ ! $MD5SUM1 == $MD5SUM2 ] ; do 
+              MD5SUM1=$MD5SUM2
+              sleep 5
+              wait_t=$(( wait_t + 1 ))
+              [ $wait_t -gt $maxwait ] && { echo "No file found on disk, exit" ; exit 1 ; }
+              MD5SUM2=$( md5sum "$FILEIN" | cut -d" " -f1 )
+            done
+            echo "md5sum for $FILEIN has stabilized at $(date)"
+          done
+         fi
+
+         # Update registry
+         echo "#${FILEOUT}#" >> "$regfile"
+
+         # Write the signal files
+         case $TYPE in
+            "his")
+              # Historic files that should be converted to grib files
+              if [[ "$CONVERTFA" == "yes" ]] && [[ "$ARCHIVE_FORMAT" =~ "GRIB" ]]; then
+
+                [ -f $listenfile ] || touch $listenfile
+                # Check if this hour is in file
+                ret=0
+                mret=0
+                grep "#Makegribr#${FC_STEP_LOOP}#${TYPE}#" $mregfile > /dev/null 2>&1 || mret=1
+                if [ $mret -eq 1 ]; then
+                 grep "Makegrib $FC_STEP_LOOP $TYPE" $listenfile > /dev/null 2>&1 || ret=1
+                 if [ $ret -eq 1 ]; then
+                  if [ "$IO_SERVER" = yes ] ; then
+                    [[ $FILEINS == "" ]] || { echo "$FILEINS" > $WRK/Makegrib_${FC_STEP4}_${TYPE} ; }
+                  fi  
+                  echo "Makegrib $FC_STEP_LOOP $TYPE" >> $listenfile
+                 fi
+                fi
+              fi
+              # Files that should be post-processed from the historic files
+              # You need historic files for this
+              if [ "$POSTP" == "offline" ]; then
+                for POST_STEP_LOOP in $LIST_FP; do
+                  # Only process this step if in POSTLIST
+                  if [ "$POST_STEP_LOOP" -eq "$FC_STEP_LOOP" ]; then
+                    [ -f $listenfile ] || touch $listenfile
+                    # Check if this hour is in file
+                    ret=0
+                    grep "Postpp $FC_STEP_LOOP fp" $listenfile > /dev/null || ret=1
+                    if [ $ret -eq 1 ]; then
+                      echo "Postpp $FC_STEP_LOOP fp" >> $listenfile
+                    fi 
+                    LIST_FP=$( echo " $LIST_FP " | sed "s/ ${FC_STEP_LOOP} / /" )
+                  fi
+                done
+              fi
+            ;;
+            "sfx"|"sfxf"|"fp")
+              # Historic surfex files that should be converted to grib files
+              if [[ "$CONVERTFA" == "yes" ]] && [[ "$ARCHIVE_FORMAT" =~ "GRIB" ]]; then
+
+                [ -f $listenfile ] || touch $listenfile
+                # Check if this hour is in file
+                ret=0
+                mret=0
+                grep "#Makegrib#${FC_STEP_LOOP}#${TYPE}#" $mregfile > /dev/null 2>&1 || mret=1
+                if [ $mret -eq 1 ]; then
+                 grep "Makegrib $FC_STEP_LOOP $TYPE" $listenfile > /dev/null 2>&1 || ret=1
+                 if [ $ret -eq 1 ]; then
+                  if [ "$IO_SERVER" = yes ] ; then
+                    [[ $FILEINS == "" ]] || { echo "$FILEINS" > $WRK/Makegrib_${FC_STEP4}_${TYPE} ; }
+                  fi  
+                  echo "Makegrib $FC_STEP_LOOP $TYPE" >> $listenfile
+                 fi
+                fi
+              fi
+            ;;
+            *)
+              echo "File type $TYPE is not implemented"
+              exit 1
+            ;;
+         esac
+
+         # Create a full FA File
+         if [ $RUNFACAT -eq 1 ] ; then
+           ret=0
+           mret=0
+           grep "#FAcat#${FC_STEP_LOOP}#${TYPE}#" $mregfile > /dev/null 2>&1 || mret=1
+           if [ $mret -eq 1 ]; then
+            # Delegate facat to sub-listeners, more efficient
+            grep "FAcat ${FC_STEP_LOOP} ${TYPE}" $listenfile > /dev/null 2>&1 || ret=1
+            if [ $ret -eq 1 ]; then
+	     echo "'FAcat delegated to sub-listener(s) at `date`"
+	     echo "FAcat $FC_STEP_LOOP $TYPE" >> $listenfile
+             echo "$FILEINS $FILEOUT" > $WRK/FAcat_${FC_STEP4}_${TYPE}
+            fi
+           fi
+         fi
+
+        fi
+
+        # Remove this forecast length from the list
+        LIST=$( echo " $LIST " | sed "s/ ${FC_STEP_LOOP} / /" )
+
+      done # for TYPE in $FILETYPES ; do
+
+      case $TYPE in
+        "his")
+          hourfound_hi=$FC_STEP
+          FOUND=$FOUND_HI
+          LIST_HI=$LIST
+        ;;
+        "sfx")
+          hourfound_sfx=$FC_STEP
+          FOUND=$FOUND_SFX
+          LIST_SFX=$LIST
+        ;;
+        "sfxf")
+          hourfound_sfxf=$FC_STEP
+          FOUND=$FOUND_SFXF
+          LIST_SFXF=$LIST
+        ;;
+        "fp")
+          hourfound_fp=$FC_STEP
+          LIST_FP=$LIST
+        ;;
+      esac
+
+    fi # if [ "$hourfound" -lt "$FC_STEP" -a $FOUND -eq $1]; then
+
+  done
+
+  if [[ ! "$LIST_HI $LIST_FP $LIST_SFX $LIST_SFXF" =~ [0-9]{1,} ]] && [ -s $WRK/fc_complete ] ; then
+    $SMSMETER progress $LL
+    echo "COMPLETE" >> $listenfile
+    echo "Last forecast $hourtext $listenhour found at $(date). Listener ends..."
+    echo "Content of listener.txt"
+    cat $listenfile
+    echo "Content of regfile:$regfile"
+    cat $regfile
+    listenhour=-1
+    break
+  elif [ -s $WRK/fc_complete ] ; then
+    # Forecast has ended, make a last search for files
+    FC_STEP_HI=$LLSET
+    FC_STEP_SFX=$LLSET
+    FC_STEP_SFXF=$LLSET
+    FC_STEP_FP=$LLSET
+    FOUND_HI=1
+    FOUND_FP=1
+  fi
+
+  # If nothing is done sleep a bit and then test for patience
+  if [ $done_anything -eq 0 ] ; then
+    sleep $sleeptime
+    elapsedtime=$(date +%s)
+    if [ "$elapsedtime" -gt "$timelimit" ]; then
+      echo "Ran out ouf patience. Time elapsed: $elapsedtime"
+      exit 1
+    fi
+  fi
+
+done
+
+# Normal exit
+cd ..
+rm -fr "$WDIR"
+trap - 0

@@ -1,0 +1,39 @@
+#!/bin/bash
+#
+# Create and clean working directories
+#
+
+. header.sh
+
+#
+# Check directories
+#
+
+[[ -s $EXTRARCH ]] || $MKDIR $EXTRARCH
+[[ -s $ARCHIVE ]] || $MKDIR $ARCHIVE
+[[ -s $WRK ]] || $MKDIR $WRK
+
+
+#
+# Clean WRK
+#
+
+cd $WRK || exit
+rm -rf cli bd* fort.* ICMS* ELS* *.lfi BD*.gz fc* PF* Failed_* oulan odb*
+
+# Default coldstart setting. Could be overridden later by e.g. FirstGuess script.
+coldstart=no
+[ $DTG -eq $DTGBEG -a "$RUNNING_MODE" != "operational" ] && coldstart=${COLDSTART:-"yes"}
+echo $coldstart > is_coldstart
+
+# In case of multiple hosts, assumes $WRK=$HM_DATA/$CYCLEDIR on all hosts
+set -x
+snode=${SMSNODE:-${ECF_NODE:-'localhost'}}
+if [ "$HOSTNAME" != "$snode" ]; then
+    ${RSH-rsh} $snode $MKDIR $HM_DATA0/$CYCLEDIR
+    ${RCP-rcp} is_coldstart $snode:$HM_DATA0/$CYCLEDIR
+fi
+
+Create_param_bin
+
+trap 0

@@ -1,0 +1,17 @@
+# Create a ~/.netrc file with
+#  machine hirlam.org
+#  login <username>
+#  password <password> 
+
+
+
+BEGIN {print("\033[0;31mECFLOW Nodes with invalid hrefs:\033[0m");  
+  if (system("if [ -f ~/.netrc ]; then exit 0; else exit 1; fi")) { 
+    print("No ~/.netrc file. Skipping test"); exit(0);
+  }
+}   
+N[type=="ecflowtask" && href!=""] {
+  if (system("curl --netrc-file ~/.netrc --output /dev/null --silent --head --fail " +  $.href)) {
+    print($);
+  }
+}

@@ -1,0 +1,116 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#|===================================================================
+#|
+#| Different perturbation methods are distinguished by
+#| ENSINIPERT. This script implements ENSINIPERT=bnd
+#|
+#| bnd: boundary data mode
+#|      pert(mbr) = an(mbr) + bd1(mbr) - bd1(ensctl)
+#|           where bd1 denotes the first boundary file
+#|
+#| Now using new program "ADDPERT" instead of 2 x BLEND
+#| ADDPERT includes control of relative humidity to avoid unphysical q
+#|
+#|===================================================================
+
+
+# Find files used to compute perturbation
+ensctl=${ENSCTL?"ENSCTL not set - fatal error in PertAna"}
+eee=$( perl -e 'printf("%03d",shift)' $ensctl )
+FILE2=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+FILE3=$( grep "000|" $WRK/../mbr$eee/bdstrategy | awk '{print substr($2,1)}' )
+
+[ -s $FILE2 ] || { echo "FILE2=$FILE2 not found, abort!"; exit 1; }
+cp $FILE2 FILE2
+[ -s $FILE3 ] || { echo "FILE3=$FILE3 not found, abort!"; exit 1; }
+cp $FILE3 FILE3
+
+## If we have performed analysis ourselves, we don't want to loose it
+if [ "$ANAATMO" != "none" -o "$PERTATMO" != "none" ]; then
+   eee=$( perl -e 'printf("%03d",shift)' $ENSMBR )
+fi
+
+if [ -s $ARCHIVE/../mbr$eee/ANAB1999+0000 ]; then
+    # Use blended analysis if found
+    ln -sf $ARCHIVE/../mbr$eee/ANAB1999+0000 FILE1
+elif [ -s $WRK/../mbr$eee/fc_start ]; then
+    # In case of cold starts
+    ln -sf $WRK/../mbr$eee/fc_start FILE1
+else
+    echo "Could not find a base analysis from member $eee, abort!"
+    exit 1
+fi
+cp FILE1 FILE4
+
+# TKE settings
+if [ $PHYSICS = alaro ] ; then
+   L_TKE=F
+else
+ if [ $( $BINDIR/domain_prop_grib_api -f -CHECK_FIELD S001TKE FILE1 ) -eq 1 ] ; then
+   L_TKE=T
+ else
+   L_TKE=F
+ fi
+fi
+
+# Copy NH fields 
+if [ $DYNAMICS = nh ] ; then
+   L_SPEC_NH=T
+else
+   L_SPEC_NH=F
+fi
+
+# AROME cloud variables
+if [ $PHYSICS = arome ] ; then
+   LAROME=T
+   LOPEZ=F
+else
+   LAROME=F
+   LOPEZ=T
+fi
+
+cat > fort.4 <<EOF
+&NAMPERT
+   Z_MULT=1.0,
+   CLFNAME(1)='FILE1',
+   CLFNAME(2)='FILE2', 
+   CLFNAME(3)='FILE3',
+   CLFNAME(4)='FILE4',
+   L_LOPEZ=$LOPEZ,
+   L_AROME=$LAROME,
+   L_TKE=$L_TKE,
+   L_NH=$L_SPEC_NH,
+/
+&NAMDYNCORE
+/ 
+&NAMSCEN
+/
+EOF
+
+export DR_HOOK_NOT_MPI=1
+
+$BINDIR/ADDPERT || exit 1
+
+rm FILE1 FILE2 FILE3  #symbolic links or temporary copies
+
+mv -f FILE4 $ARCHIVE/PERTANA1999+0000
+
+# Point fc_start to the perturbed analysis
+ln -sf $ARCHIVE/PERTANA1999+0000 $WRK/fc_start
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

@@ -1,0 +1,6 @@
+N[type=="ecflowtask"]  {fillcolor="gold";        shape="box";     style="filled" }
+N[type=="WRKfile"]     {fillcolor="powderblue";  shape="ellipse"; style="filled" }
+N[type=="ARCHIVEfile"] {fillcolor="coral";       shape="ellipse"; style="filled" }
+N[type=="CONSTfile"]   {fillcolor="peru";        shape="ellipse"; style="filled" }
+N[type=="CLIMATEfile"] {fillcolor="lightgreen";  shape="ellipse"; style="filled" }
+

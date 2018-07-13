@@ -1,0 +1,215 @@
+#!/bin/bash
+
+trap "rm -f $EXTRARCH/WebgraF/.webgraf_lock" 0
+
+#
+# Plotlog, the main driver for parsing of IFS logfiles
+# - Scan logfiles
+# - Create cpu cost and grid point and spectral norm plots for the current cycle 
+#   as well as average over several cycles
+# - Create cost function plots for the current cycle 
+# - Plot surface assimilation increments as given by SODA logfiles
+# - Plot observation usage statistics
+# - Present all plots in WebgraF
+#
+# Ulf Andrae, SMHI, 2012
+#
+
+####### Functions ############
+function webdef {
+
+cat > input.js << EOF
+title='$1 for $EXP'
+
+loc = ['l','t','t','t','t']
+mname=['Parameter','Period','Day','Hour','Month']
+order = [0,4,1,2,3]
+
+v[0]=[$LABEL]
+t[0]=v[0]
+v[1] = ['gen_date','YYYYMMDDHH',$DTG,$DTGS,$FCINT]
+t[1] = v[1]
+v[2] = ['month_num',1,31]
+t[2] = ['month_num',1,31]
+v[3] = [$HOURS]
+t[3] = [$HOURS]
+v[4] = ['gen_date','YYYYMM',$MONTH,$MONTHS]
+t[4] = v[4]
+
+ext='png'
+
+my_con     = ['$2/[0]_[1].png','$2/[0]_[4][2][3].png','$2/[0]_[4].png'];
+my_con_txt = ['Continous','Per cycle','Year-month'];
+my_con_title = 'View';
+EOF
+
+}
+####### End functions ############
+
+#
+# Create working directory
+#
+WRK=$EXTRARCH/logmonitor
+[[ -s $WRK ]] || $MKDIR $WRK
+[[ -s $EXTRARCH/WebgraF/ ]] || $MKDIR $EXTRARCH/WebgraF/
+
+cd $WRK
+
+# Define WebgraF interface and create a copy under archive/extract
+
+lockfile.sh $EXTRARCH/WebgraF/.webgraf_lock
+
+export WEBGRAF_BASE=$HM_LIB/util/monitor/WebgraF
+WEBCALL="$HM_LIB/util/monitor/WebgraF/bin/WebgraF -p $EXP -b $EXTRARCH/WebgraF"
+
+[[ -s $EXTRARCH/WebgraF ]] || mkdir -p $EXTRARCH/WebgraF
+$WEBCALL -I "Monitoring for $EXP"
+
+
+# Define time range [DTGS:$DTG] and [$MONTHS:$MONTH] for the average plots
+BACK=-240
+MONTH=$( echo $DTG | cut -c1-6 )
+DTGS=${MONTH}0100
+[[ $DTGS -lt $DTGBEG ]] && DTGS=$DTGBEG
+
+MONTHS=$( echo $DTGBEG | cut -c1-6 )
+NSEARCH=5
+
+HH=$(( $(( $DTG % 100 ))  %  $FCINT ))
+HOURS=$( perl -e "printf('%2.2i', '$HH')" )
+while [ $HH -lt $(( 24 - $FCINT )) ] ;do
+  HH=$(( $HH + $FCINT ))
+  HOURS="$HOURS $( perl -e "printf('%2.2i', '$HH')" )"
+done
+HOURS=\'$( echo $HOURS | sed "s/ /\',\'/g" )\'
+
+
+# Scan the log files
+Scan_harmonie_log.pl $ARCHIVE_ROOT/log/HM_Date_${DTG}.html || exit
+
+# Plot the gpnom, spnorm and CPU
+if [ -s gpnorm_$DTG.dat -o -s spnorm_$DTG.dat ] ; then
+
+ #
+ # Grid point and spectral norms, current and average
+ #
+
+ for NORM in gpnorm spnorm ; do
+   norm_plot.pl -t $NORM  -d $DTG -n $NSEARCH || exit 
+   norm_plot.pl -t $NORM  -d $MONTH -a -s . || exit 
+ done
+
+ tar cvf plots.tar *.png
+
+ # Create the WebgraF definition file and the page
+ GP=$( head -1 gpnorm_$DTG.dat | sed "s/# //" | sed "s/EZDIAG[0-9][0-9] //g" )
+ SP=$( head -1 spnorm_$DTG.dat | sed "s/# //" )
+
+ LABEL=\'$( echo $GP $SP | sed "s/ /\',\'/g" )\'
+ webdef 'Gridpoint and spectral norms evolutaion and average values' norms
+ $WEBCALL -e norms -f plots.tar
+ $WEBCALL -e norms -f input.js
+
+ rm -f plots.tar *.png *.gp
+
+
+ #
+ # Special treatment of CPU
+ #
+
+ NORM=cpu
+ NSEARCH=0
+ norm_plot.pl -t $NORM  -d $DTG -n $NSEARCH || exit 
+ norm_plot.pl -t $NORM  -d $MONTH -a -s . || exit 
+
+ tar cvf plots.tar *.png
+
+ LABEL=\'CPU\'
+ webdef 'CPU cost' $NORM
+ $WEBCALL -e $NORM -f plots.tar
+ $WEBCALL -e $NORM -f input.js
+
+ rm -f plots.tar *.png *.gp
+
+fi
+
+#
+# Plot the surface assimilation increments
+#
+
+if [ -s surfass_$DTG.dat ] ; then
+ # Surface assimilation
+ norm_plot.pl -t surfass -d $DTG -ds $DTGS || exit
+ tar cvf plots.tar *.png
+ LABEL=\'$( head -1 surfass_$DTG.dat | sed "s/# //" | sed "s/ /\',\'/g" )\'
+ 
+cat > input.js << EOF
+title='Surface assimilation increments'
+
+mname=['Parameter','Period']
+
+v[0]=[$LABEL]
+t[0]=v[0]
+v[1] = ['gen_date','YYYYMM',$MONTH,$MONTHS]
+t[1] = v[1]
+loc = ['l','t']
+
+pdir ='surfass/'
+ext='png'
+
+EOF
+
+ $WEBCALL -e surfass -f plots.tar
+ $WEBCALL -e surfass -f input.js
+ rm -f *.png  input.js *.gp
+
+fi 
+
+
+#
+# Plot the cost function
+#
+
+TARGET=costfun
+if [ -s ${TARGET}_$DTG.dat ] ; then
+
+ norm_plot.pl -t $TARGET -l "'JB JO JP JT'" -d $DTG -n 0 || exit 
+ tar cvf plots.tar *.png
+
+ # Create WebgraF interface and page
+ LABEL="'costfun'"
+ webdef 'Cost function evoultion' $TARGET
+ $WEBCALL -e $TARGET -f plots.tar
+ $WEBCALL -e $TARGET -f input.js
+
+ cat input.js
+
+ rm -f plots.tar *.png *.gp
+
+fi
+
+
+if [ -s obsuse_$DTG.dat ] ; then
+
+ #
+# Observation usage
+ #
+
+ obs_usage_plot.pl . $MONTH
+
+ tar cvf plots.tar *.png
+
+ $WEBCALL -e obs_usage -f input.js
+ $WEBCALL -e obs_usage -f plots.tar
+
+fi
+
+# Fix softlinks
+$HM_LIB/util/monitor/scr/Link2file $EXTRARCH/WebgraF || exit
+
+rm -f *.gp *.js *.tar $EXTRARCH/WebgraF/.webgraf_lock
+
+cd -
+
+# Exit
+trap 0

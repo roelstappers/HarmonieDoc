@@ -1,0 +1,451 @@
+#!/bin/bash
+#-----------------------------------------------------------------------
+# Surface analysis - OI (configuration 701 of ALADIN model)
+#-----------------------------------------------------------------------
+# Inputs:
+#
+#   #--first guess (the same file with 2  different names):  
+#     ICMSHMIN1INIT
+#     ELSCFMIN1ALBC000
+#
+#   #--Input/output (CCMA) ODB directory structure, containing only 
+#      the active observations:
+#     ${d_DBCAN}/CCMA
+#               /CCMA.${base1}
+#               ....
+#
+#   #--Constants and statistics   
+#     (1)rszcoef_fmt,  etc.
+#
+# Outputs:
+#   #--Surface analysis
+#   #--The oi (update) information will be put into the 
+#      input (CCMA) ODB.
+#-----------------------------------------------------------
+#   Globals: ...
+#-----------------------------------------------------------
+
+
+. header.sh
+. functions.ksh
+
+My_trap_handler () {
+    Cat_logs NODE.*
+    [ "$RUNNING_MODE" = operational ] && { echo "CANARI for $ANASURF failed!" >> $WRK/can_oper.dat; }
+}
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "My_trap_handler; Trapbody $WDIR" 0
+
+
+d_CANARI=$WRK/$WDIR
+
+. include.ass
+
+#--- Get Local vars
+ANASURF_MODE_SMS=`echo $SMSPARENT`
+if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC" -a "$ANASURF_MODE" == "both" ]; then
+  export d_DB=$WRK/odb_can_ori2
+  export d_DBMERGE=$WRK/odb_can_merge2
+  export d_DBCAN=$WRK/odb_can2
+else
+  export d_DB=$WRK/odb_can_ori
+  export d_DBMERGE=$WRK/odb_can_merge
+  export d_DBCAN=$WRK/odb_can
+fi
+
+#
+# ** In case of observation perturbation, the initilation below
+# ** is done in Pertobs script. There is no need to do it again
+#
+
+if [ "$PERTSURF" != 'ECMA' ]; then
+
+ InitDir ${d_DB} ${d_DBMERGE}
+
+ #--- Merge the ODB sub-bases i.e. create an
+ #    ECMA virtual base if no 3dvar
+ Merge -d ${d_DBMERGE} -t "$types_BASE_can" -s 1
+
+ InitDir ${d_DBMERGE} ${d_DBCAN}
+fi
+
+#-- enter the working dir
+cd ${d_CANARI}
+
+#--- fetching the guess
+
+# First guess for CANARI is from 4DVtraj if 4DVAR and ANASURF_MODE is not before 
+if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC2" ]; then
+  ln -sf $WRK/first_guess ICMSHANALINIT
+  ln -sf $WRK/first_guess ELSCFANALALBC000
+  NREQIN=0
+  LREQOUT=.FALSE.
+elif [ "$ANAATMO" == "3DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC2" ]; then
+  # If AnSFC is done after 3D-Var
+  ln -sf  $WRK/fc_start ICMSHANALINIT
+  ln -sf ICMSHANALINIT ELSCFANALALBC000
+  NREQIN=1
+  LREQOUT=.TRUE.
+else
+  # Normal AnSFC before AnUA
+  INT_BDFILE=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+  ln -sf  $WRK/first_guess ICMSHANALINIT
+  ln -sf $INT_BDFILE ELSCFANALALBC000
+  NREQIN=1
+  LREQOUT=.TRUE.
+fi
+
+if [ ! -f ./ICMSHANALINIT ] ; then
+  echo "Sorry, no first-guess!!!"
+  exit 1
+fi
+
+#--- ECMWF SST and SIC interpolated to model domain
+if [ "$HOST_MODEL" == "ifs" ] ; then
+  LECSST=.T.
+  ln -sf  $WRK/ECMWF_CANARI_SST_SIC ICMSHANALESST
+  [[ -f ./ICMSHANALESST ]] || { echo "No ECMWF SST and SIC found" ; exit 1 ; }
+else
+  ln -sf $WRK/ELSCFHARMALBC000 ICMSHANALESST 
+  LECSST=.F.
+fi
+
+#--- fetching consts
+ln -sf ${HM_LIB}/const/bias_corr/rszcoef_fmt rszcoef_fmt || \
+                { echo "No rszcoef_fmt to run CANARI!" ; exit 1 ; }
+ln -sf ${HM_LIB}/const/sa_const/POLYNOMES_ISBA fort.61 || \
+                { echo "No ISBA file to run CANARI!" ; exit 1 ; }
+
+#--- RTTOV coeffs
+ln -sf ${HM_SAT_CONST}/* .
+
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+#--- fetching consts
+cp ${HM_LIB}/const/bias_corr/*amv* .
+
+#--- check odb
+CheckDir ${d_DBCAN}
+
+#--- fetch climate files
+mm=`mandtg -month $DTG`
+dd=`mandtg -day $DTG`
+if [ $dd -le 15 ]; then 
+  set +e
+  M2=`expr $mm - 1` 
+  [ $M2 -eq 0 ]  && M2=12
+  set -e
+elif [ $dd -gt 15 ]; then
+  M2=`expr $mm + 1`
+  [ $M2 -eq 13 ] && M2=1
+fi
+[ $M2 -lt 10 ] && M2=0${M2}
+
+ln -sf ${CLIMDIR}/m${mm} ICMSHANALCLIM || \
+            { echo "No 1st climate file to run CANARI!" ; exit 1 ; }
+ln -sf ${CLIMDIR}/m${M2} ICMSHANALCLI2 || \
+            { echo "No 2nd climate file to run CANARI!" ; exit 1 ; }
+
+#--- ODB settings for CANARI
+export ODB_CMA=ECMA
+if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC" -a "$ANASURF_MODE" != "after" ]; then
+  # First AnSFC for 4DVAR when ANASURF_MODE=before or after is FCINT/2 before DTG
+  start_4dv=$(( $FCINT / 2 ))
+  dat=${YMD}${HH}
+  dat=`mandtg $dat + -$start_4dv`
+  export ODB_ANALYSIS_DATE=`echo $dat | cut -c1-8`
+  export ODB_ANALYSIS_TIME=`echo $dat | cut -c9-10`0000
+  export BASETIME=$dat
+else
+  export ODB_ANALYSIS_DATE=${YMD}
+  export ODB_ANALYSIS_TIME=${HH}0000
+  export BASETIME=$DTG
+fi
+export ODB_IO_METHOD=1
+export ODB_LDA_METHOD=1
+export ODB_STATIC_LINKING=1
+export ODB_MERGEODB_DIRECT=1
+export ODB_ECMA_CREATE_POOLMASK=1
+export ODB_ECMA_POOLMASK_FILE=ECMA.poolmask
+export ODB_SRCPATH_ECMA=${d_DBCAN}/ECMA
+export ODB_DATAPATH_ECMA=${d_DBCAN}/ECMA
+export IOASSIGN=${d_DBCAN}/ECMA/IOASSIGN
+
+#--- ODB Debug
+if [ $ODB_VERBOSE_OUT -eq 1 ];then
+  export ODB_TRACE_PROC=-1
+  export ODB_TRACE_FILE=${d_DBCAN}/trace.%d
+  export ODB_TRACE_FLUSH_FREQ=1
+  export DR_HOOK=1
+fi
+
+# Set SURFEX options 
+if [ $SURFACE = "surfex" ] ; then
+  LAEICS=.FALSE.
+  LDIRCLSMOD=.TRUE.
+else
+  LAEICS=.TRUE.
+  LDIRCLSMOD=.FALSE.
+fi
+
+# Snow analysis in CANARI
+if [ "$HH" -eq "06" ]; then
+  LAESNM=.TRUE.
+else
+  LAESNM=.FALSE.
+fi
+
+# Large scale mixing of first boundary file
+lsmixbc=.FALSE.
+[ "$LSMIXBC" = yes ] && lsmixbc=.TRUE.
+
+# Activate call to SODA from CANARI
+if [ "$ANASURF" != "CANARI" ]; then
+  LAEICS_SX=.TRUE.
+else
+  LAEICS_SX=.FALSE.
+fi
+
+# Surfex output format if surfex is used
+if [ $SURFEX_OUTPUT_FORMAT = "lfi" ] ; then
+  LFMREAD=.TRUE.
+  LFMWRIT=.TRUE.
+  LFAPGD=.FALSE.
+else
+  # Only relevant for inline
+  LFMREAD=.FALSE.
+  LFMWRIT=.FALSE.
+  LFAPGD=.TRUE.
+fi
+
+is_coldstart=$( cat $WRK/is_coldstart )
+if [ $is_coldstart != "yes" -a "${INITCLOUDFRACTI-yes}" = yes -a $PHYSICS = "arome" ]; then
+   ICLOUDFRACTI="1"
+   LCLOUDFRACTI=".TRUE."
+else
+   ICLOUDFRACTI="-1"
+   LCLOUDFRACTI=".FALSE."
+fi
+
+#--- namelist
+NAMELIST=$WRK/$WDIR/namelist_canari
+Get_namelist canari $NAMELIST
+sed -e "s/NBPROC/${NPROC}/g" \
+    -e "s/NPROCX/${NPROCX}/g" \
+    -e "s/NPROCY/${NPROCY}/g" \
+    -e "s/LAEICS=LAEICS/LAEICS=$LAEICS/g" \
+    -e "s/LAEICS_SX=LAEICS_SX/LAEICS_SX=$LAEICS_SX/g" \
+    -e "s/LDIRCLSMOD=LDIRCLSMOD/LDIRCLSMOD=$LDIRCLSMOD/g" \
+    -e "s/ECMWF_SST/${LECSST}/g" \
+    -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+    -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+    -e "s/=LAESNM/=$LAESNM/" \
+    -e "s/=LSMIXBC/=$lsmixbc/" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/=LFMWRIT/=${LFMWRIT}/g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/NCONF=NCONF/NCONF=701/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"ANAL\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    -e "s/=NREQIN/=$NREQIN/g" \
+    -e "s/=LREQOUT/=$LREQOUT/g" \
+    $NAMELIST > fort.4 || \
+        { echo "No NAMELIST file to run CANARI!" ; exit 1 ; }
+
+Cat_logs fort.4
+
+if [ "$ANASURF" != "CANARI" ]; then
+
+  log="OUTPUT_LISTING.txt"
+
+  # Link Ecoclimap cover files
+  ln -sf $CLIMDIR/*.bin .
+
+  # Fetch first_guess and result from CANARI
+  ln -s $WRK/first_guess          FG_OI_MAIN
+  ln -s $WRK/CANARI               CANARI
+
+  #--- ECMWF SST and SIC interpolated to model domain
+  if [ "$HOST_MODEL" == "ifs" ] ; then
+    LECSST=.TRUE.
+    ln -sf  $WRK/ECMWF_CANARI_SST_SIC SST_SIC
+    [[ -f ./SST_SIC ]] || { echo "No ECMWF SST and SIC found" ; exit 1 ; }
+  else
+    LECSST=.FALSE.
+    ln -sf $WRK/ELSCFHARMALBC000 SST_SIC
+  fi
+
+  # Copy first guess for surfex to PREP.
+  # SURFEX need full file because it corrects with increments
+  if [ $SURFEX_OUTPUT_FORMAT = "lfi" ] ; then
+    cp $WRK/first_guess_sfx PREP.lfi
+    if [ "$ANASURF" == "CANARI_EKF_SURFEX" ]; then
+      cp $ARCHIVE/PREP_EKF_PERT?.lfi .
+    fi
+  else
+    cp $WRK/first_guess_sfx ICMSHANALINIT.sfx
+    if [ "$ANASURF" == "CANARI_EKF_SURFEX" ]; then
+      cp $ARCHIVE/PREP_EKF_PERT0.fa ICMSHANALPRT0.sfx
+      cp $ARCHIVE/PREP_EKF_PERT1.fa ICMSHANALPRT1.sfx
+      cp $ARCHIVE/PREP_EKF_PERT2.fa ICMSHANALPRT2.sfx
+      cp $ARCHIVE/PREP_EKF_PERT3.fa ICMSHANALPRT3.sfx
+      cp $ARCHIVE/PREP_EKF_PERT4.fa ICMSHANALPRT4.sfx
+    fi
+  fi
+
+  # Climate file
+  MM=$( mandtg -month $DTG )
+  ln -s $CLIMDIR/m$MM Const.Clim
+  ln -s $CLIMDIR/PGD.lfi PGD.lfi
+  ln -s $CLIMDIR/Const.Clim.sfx Const.Clim.sfx
+
+  # Get namelist
+  if [ $PHYSICS = "arome" ] ; then
+    LAROME=.TRUE.
+  else
+    LAROME=.FALSE.
+  fi
+
+  if [ "$ANASURF" == "CANARI_OI_MAIN" ]; then
+
+    lpertsurf=.FALSE.
+    NAMELIST=$WRK/$WDIR/namelist_sfx_oi_main
+    Get_namelist sfx_oi_main $NAMELIST
+
+    sed -e "s/=LAROME/=$LAROME/" \
+      -e "s/=LECSST/=$LECSST/" \
+      -e "s/=LAESNM/=$LAESNM/" \
+      -e "s/CFILE_SIC=CFILE_SIC/CFILE_SIC=\"CFILE_SIC\"/g"\
+      -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+      -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+      $NAMELIST > EXSEG1.nam
+
+  elif [ "$ANASURF" == "CANARI_EKF_SURFEX" ]; then
+
+    lpertsurf=.FALSE.
+    # Find the number of control variables
+    INCVARS=`echo $INCV | sed -e 's/,/ /g'`
+    EKF_NPERT=0
+    for INCVAR in $INCVARS; do
+      [ "$INCVAR" -eq "1" ] && EKF_NPERT=$(( $EKF_NPERT + 1 ))
+    done
+
+    FGDTG=$( mandtg $DTG + -$FCINT )
+    FGYY=$( mandtg -year  $FGDTG )
+    FGMM=$( mandtg -month $FGDTG )
+    FGDD=$( mandtg -day   $FGDTG )
+    FGHH=$( mandtg -hour  $FGDTG )
+    FGHH=$(printf "%.2d" "$FGHH")
+
+    # Get and modify the namelist
+    Get_namelist sfx_ekf_main $NAMELIST
+# Hard code LPERTSURF to be .FALSE.
+    lpertsurf=.FALSE.
+    sed -e "s/IVAR=VV/IVAR=1/" \
+      -e "s/NVAR=NV/NVAR=$EKF_NPERT/" \
+      -e "s/LSIM=LSIM/LSIM=.FALSE./" \
+      -e "s/LPRT=LPRT/LPRT=.FALSE./" \
+      -e "s/LBFIXED=LBFIXED/LBFIXED=.FALSE./" \
+      -e "s/LBEV=LBEV/LBEV=.TRUE./" \
+      -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+      -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+      -e "s/INCV=INCV/INCV=$INCV/" \
+      -e "s/INCO=INCO/INCO=$INCO/" \
+      -e "s/=LAROME/=$LAROME/" \
+      -e "s/=LECSST/=$LECSST/" \
+      -e "s/=LAESNM/=$LAESNM/" \
+      -e "s/CFILE_SIC=CFILE_SIC/CFILE_SIC=\"CFILE_SIC\"/g"\
+       $NAMELIST > EXSEG1.nam
+    
+    for f in `ls -1 $ARCHIVE/BGROUNDout_ASSIM.*`; do
+      cpu=`echo $f | awk -F. '{ print $NF }'`
+      ln -sf $f BGROUNDin.${cpu}
+    done
+    for f in `ls -1 LTM_del*_del*`; do
+      [ -f $f ] && mv $f $WRK/${f}_$YY$MM$DD$HH.DAT
+    done
+  fi
+
+  # Show namelist
+  Cat_logs EXSEG1.nam
+fi
+
+$MPPEXEC $BINDIR/$MODEL || exit 1
+
+if [ ! -f ICMSHANAL+0000 ]; then
+  echo "CANARI didn't produce analysis file!"
+  exit 1
+fi 
+
+[[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+Cat_logs NODE.001_01
+if [ "$ANAATMO" == "4DVAR" -a "$ANASURF_MODE_SMS" == "AnSFC" -a "$ANASURF_MODE" == "both" ]; then
+  cp ICMSHANAL+0000 ICMSHANAL+0000_2
+  mv ICMSHANAL+0000_2 $ARCHIVE
+fi
+mv ICMSHANAL+0000 $ARCHIVE
+
+# Re-linking after CANARI
+# Not re-link first guess if we use CANARI_OI_MAIN for ANASURF
+# CANARI is then only done to find increments
+if [ $ANASURF = CANARI_OI_MAIN -o $ANASURF = CANARI_EKF_SURFEX ]; then
+  ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/CANARI
+  ls -l $WRK/CANARI
+else
+  # Relink first guess and fc_start
+  ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/first_guess
+  ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/fc_start
+  ls -l $WRK/fc_start
+  ls -l $WRK/first_guess
+fi
+
+if [ "$ANASURF" != "CANARI" ]; then
+  if [ "$ANASURF" == "CANARI_EKF_SURFEX" ]; then
+    # Store data in $WRK directory 
+    mv ANAL_INCR*  $WRK/.
+    [ -f HO_WG2_v1 ] && mv HO_WG2_v1  $WRK/HO_WG2_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_WG2_v2 ] && mv HO_WG2_v2  $WRK/HO_WG2_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_WG2_v3 ] && mv HO_WG2_v3  $WRK/HO_WG2_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_WG1_v1 ] && mv HO_WG1_v1  $WRK/HO_WG1_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_WG1_v2 ] && mv HO_WG1_v2  $WRK/HO_WG1_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_WG1_v3 ] && mv HO_WG1_v3  $WRK/HO_WG1_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_TG2_v1 ] && mv HO_TG2_v1  $WRK/HO_TG2_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_TG2_v2 ] && mv HO_TG2_v2  $WRK/HO_TG2_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_TG2_v3 ] && mv HO_TG2_v3  $WRK/HO_TG2_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_TG1_v1 ] && mv HO_TG1_v1  $WRK/HO_TG1_T2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_TG1_v2 ] && mv HO_TG1_v2  $WRK/HO_TG1_HU2M_$FGYY$FGMM${FGDD}_r$NT.dat
+    [ -f HO_TG1_v3 ] && mv HO_TG1_v3  $WRK/HO_TG1_WG1_$FGYY$FGMM${FGDD}_r$NT.dat
+    mv BGROUNDout_ASSIM.* $ARCHIVE
+  fi
+  if [ "$SURFEX_OUTPUT_FORMAT" == "fa" ]; then
+    mv ICMSHANAL+0000.sfx $ARCHIVE/ICMSHANAL+0000.sfx
+    ln -sf $ARCHIVE/ICMSHANAL+0000.sfx $ARCHIVE/PREP.fa
+    ln -sf $ARCHIVE/ICMSHANAL+0000.sfx $WRK/first_guess_sfx
+    ln -sf $ARCHIVE/ICMSHANAL+0000.sfx $WRK/fc_start_sfx
+  else
+    mv AROMOUT_.0000.lfi $ARCHIVE/PREP.lfi # store LFI file
+    # Update the pointer to the first guess / fc start
+    ln -sf $ARCHIVE/PREP.lfi $WRK/first_guess_sfx
+    ln -sf $ARCHIVE/PREP.lfi $WRK/fc_start_sfx
+  fi
+ 
+  # Redirect first_guess to CANARI output for upper air if LSMIXBC=yes
+  if [ "$LSMIXBC" = "yes" ]; then
+    ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/first_guess
+    ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/fc_start
+  fi
+fi
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

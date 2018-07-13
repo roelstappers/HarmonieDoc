@@ -1,0 +1,79 @@
+#!/bin/bash -x
+
+
+#
+# Sync source code for build of executables/libraries with Makeup
+#
+#
+
+. header.sh
+
+ROOTDIR=$HM_LIB export ROOTDIR
+MAKEUP_BUILD_DIR=${MAKEUP_BUILD_DIR-$ROOTDIR/$HARMONIE_CONFIG}
+
+$MKDIR $MAKEUP_BUILD_DIR/src || exit
+cd $MAKEUP_BUILD_DIR
+
+
+#
+# Sync precompiled stuff from PRECOMPILED if available. PRECOMPILED must be defined in e.g. Env_system to be used
+#
+
+if [ -s $PRECOMPILED/src -a "$PRECOMPILED" != "" ] ; then
+
+   if [ -s $HM_DATA/.already_in_sync ] ; then
+      echo "Already in sync with precompiled binaries ..."
+   else
+
+      echo "Using precompiled binaries ..."
+
+      ${RSYNC-rsync} -au $RSYNC_EXCLUDE $PRECOMPILED/src . || exit
+      ${RSYNC-rsync} -au $RSYNC_EXCLUDE --exclude=gmkpack $PRECOMPILED/util . || exit
+      echo "Syncronized to $PRECOMPILED at $( date ) " > $HM_DATA/.already_in_sync
+   fi
+
+else
+   echo "NO precompiled libraries/binaries available or PRECOMPILED is not set"
+   echo "Compiling libraries/binaries based on your experiment"
+   if [ "$MAKE_OWN_PRECOMPILED" == "yes" ]; then
+     echo "Precompiled libraries/binaries will be built!"
+   fi
+fi
+
+
+#
+# Sync sources (src + util) from HM_LIB
+#
+
+[ -f $HM_DATA/.makeup_changes ] && rm $HM_DATA/.makeup_changes
+if [[ -s $HM_LIB/src ]] ; then
+   for PROJ in $( ls $HM_LIB/src ) ; do
+          ${RSYNC-rsync} -aui $RSYNC_EXCLUDE $HM_LIB/src/$PROJ src/ >> $HM_DATA/.makeup_changes || exit
+   done
+fi
+if [[ -s $HM_LIB/util ]] ; then
+   ${RSYNC-rsync} -aui $RSYNC_EXCLUDE --exclude=gmkpack --exclude=sqlite3 --exclude=gl_grib_api --exclude=monitor/bin --exclude=monitor/scr/Env_exp $HM_LIB/util . >> $HM_DATA/.makeup_changes || exit
+fi
+
+if [ "$HM_LIB" = "$MAKEUP_BUILD_DIR" ] ; then
+  # If we sync to our own directory we always signal rebuild
+  touch $HM_DATA/.makeup_changes
+else
+# Check if sync's were done and remove the file if regexp ^> is not found
+grep '^>' $HM_DATA/.makeup_changes > /dev/null 2>&1 || rm $HM_DATA/.makeup_changes
+if [ -f $HM_DATA/.makeup_changes ]; then
+  if [ "$PRECOMPILED" != "" ]; then 
+    echo "You have local source changes on top of PRECOMPILED: $PRECOMPILED"
+  fi
+else
+  if [ "$PRECOMPILED" != "" ]; then
+    echo "You have no local source changes on top of PRECOMPILED: $PRECOMPILED"
+  else
+    echo "You have no local source changes"
+  fi
+fi
+fi
+
+# Normal exit
+trap - 0
+exit

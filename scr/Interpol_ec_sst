@@ -1,0 +1,142 @@
+#!/bin/bash
+#
+#
+# Interpolate SST/SIC from a ECMWF field to model geometry
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#
+ YY=`echo $DTG | awk '{print substr($1,1,4)}'`
+ MM=`echo $DTG | awk '{print substr($1,5,2)}'`
+ DD=`echo $DTG | awk '{print substr($1,7,2)}'`
+ HH=`echo $DTG | awk '{print substr($1,9,2)}'`
+MLL=`echo $SMSPARENT | awk '{print substr($1,4,7)}'`
+
+# Output file name
+OUTFILE=ECMWF_CANARI_SST_SIC
+
+# Climate file
+ln -sf $CLIMDIR/Const.Clim.sfx climate_aladin
+
+for SST_MODEL in $SST_SOURCES ; do
+
+ case $SST_MODEL in
+  IFS)
+   SST_FILE=$( grep "000|" $WRK/bdstrategy | awk '{print substr($3,1)}' )
+   [[ -s $SST_FILE ]] || { echo "No IFS SST file found $SST_FILE" ; exit 1 ; }
+   ;;
+  HIROMB)
+
+   # Analyses are produced at 00, 06, 12 and 18 and are available 5 hours delayed
+   # in summer (May-August)
+
+   if [[ $MM ==  05 || $MM == 06 ||  $MM == 07 || $MM == 08  ]] ; then
+
+    if [[ $HH == 06 || $HH == 03 ]] ; then
+      BHH=00
+    elif [[ $HH == 12 || $HH == 09 ]] ; then
+      BHH=06
+    elif [[ $HH == 18 || $HH == 15 ]] ; then
+      BHH=12
+    elif [[ $HH == 00 || $HH == 21 ]] ; then
+      BHH=18
+    fi
+    if [ $HH == 00 ] ; then 
+      BDTG=$( mandtg $DTG + -24 )
+    else
+      BDTG=$DTG
+    fi
+
+   else
+
+    # Only 12 UTC analysis in winter 
+
+    BHH=12
+    if [ $HH -lt 15 ] ; then 
+     BDTG=$( mandtg $DTG + -24 )
+    else
+     BDTG=$DTG
+    fi
+
+   fi
+
+   BDTG=${BDTG:0:8}$BHH
+   SST_FILE=$SST_DATA_PATH/BS01_${BDTG}00+000H00M
+   ;;
+  NEMO)
+
+   if [[ $HH == 06 || $HH == 03 ]] ; then
+     BHH=00
+   elif [[ $HH == 12 || $HH == 09 ]] ; then
+     BHH=06
+   elif [[ $HH == 18 || $HH == 15 ]] ; then
+     BHH=12
+   elif [[ $HH == 00 || $HH == 21 ]] ; then
+     BHH=18
+   fi
+   if [ $HH == 00 ] ; then 
+     BDTG=$( mandtg $DTG + -24 )
+   else
+     BDTG=$DTG
+   fi
+   BDTG=${BDTG:0:8}$BHH
+   SST_FILE=$SST_DATA_PATH/NS01_SURF_${BDTG}00+000H00M
+
+   ;;
+  ROMS)
+   SST_FILE=$SST_DATA_PATH/ocean_avg_z.nc
+   ;;
+  *)
+   echo "Cannot handle model $SST_MODEL"
+   exit 1
+   ;;
+ esac
+
+ if [ -s $SST_FILE ] ; then
+  echo "Found $SST_MODEL file $SST_FILE"
+  MERGE_OCEAN_MODELS="${MERGE_OCEAN_MODELS}'$SST_MODEL',"
+  MERGE_OCEAN_FILES="${MERGE_OCEAN_FILES}'$SST_FILE',"
+ else
+  echo "Missing $SST_MODEL file $SST_FILE"
+  [[ $RUNNING_MODE = "operational" ]] && echo "$DTG:Missing $SST_MODEL file $SST_FILE" >> $HM_DATA/severe_warnings.txt
+ fi
+
+done
+
+if [ $SURFEX_SEA_ICE = "sice" ] ; then
+ ADJUST_SST_UNDER_ICE=.FALSE.
+else
+ ADJUST_SST_UNDER_ICE=.TRUE.
+fi
+
+cat > namelist << EOF
+&naminterp
+ MERGE_OCEAN_MODELS=$MERGE_OCEAN_MODELS
+ MERGE_OCEAN_FILES=$MERGE_OCEAN_FILES
+ OUTKEY%DATE=${DTG:0:8}
+ OUTKEY%TIME=${DTG:9:2}00
+ OUTKEY%ENDSTEP=0
+ ADJUST_SST_UNDER_ICE=$ADJUST_SST_UNDER_ICE
+/
+EOF
+
+Cat_logs namelist
+
+$MPPGL $BINDIR/gl_grib_api -sst3 -n namelist -o $OUTFILE || exit
+
+# Archive
+cp $OUTFILE $ARCHIVE/${OUTFILE}_${YY}${MM}${DD}_${HH}
+mv $OUTFILE $WRK/.
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

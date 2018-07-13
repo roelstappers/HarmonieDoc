@@ -1,0 +1,432 @@
+#!/bin/bash
+#-----------------------------------------------------
+#   Extract and create obs statistics from ODB
+# 
+#   This script could get the observation type to monitor 
+#   from the playfile. As a first approach the script loops
+#   the possible observation types in this script and
+#   check if they are active in the assimilation.
+#
+#   For each observation type and CMA base  obsmon is called.
+#   Some observation types are split up into several parts 
+#   to speed up the script
+#
+#-----------------------------------------------------
+
+. header.sh
+. include.ass || exit 1
+
+function gather_logs {
+
+  # Gather all logfiles and store them in EXTRARACH
+
+  LOGDIR=$EXTRARCH/$OBSMON_EXP/$basedir/$DTG/
+  [ -d $LOGDIR ] || mkdir -p $LOGDIR
+  for obtype in $obtypes; do
+    echo "Gather all logfiles for $obtype"
+    ls -1 $WRK/obsmon/$basedir/${base}_${obtype}_*/monitor_stat.log | xargs tar -zcf $LOGDIR/logs_${obtype}.tar.gz
+  done
+
+}
+
+if [ "$#" -ne "1" -a "$#" -ne "2" ]; then
+  echo "Usage: $0 BASE [obtype/sfc]"
+  exit 1
+else
+
+  maxPartsAtSameTime=${maxPartsAtSameTime:-50}
+  # Set base
+  BASE=$1
+  base=`echo $BASE | tr '[:upper:]' '[:lower:]'`
+  BASES="$BASE"
+  bases="$base"
+  sfc=0
+  if [ "$MULTITASK" == "yes" ]; then
+    [ "$2" == "sfc" ] && sfc=1
+    if [ "$#" -gt 2 ]; then
+      echo "Max two arguments are needed for MULITITASK=yes"
+      exit 1
+    fi
+    task=obsmon_stat_odb
+    sigfile="$WRK/${task}_${base}.tasklist"
+    [ -f $sigfile ] && rm $sigfile
+  else
+    maxPartsAtSameTime=50
+    if [ "$#" -gt 1 ]; then
+      [ "$2" == "sfc" ] && sfc=1
+      obtype=$2
+    else
+      echo "You need at least two arguments for MULTITASK=no"
+      exit 1
+    fi
+  fi 
+  
+  HH=$( mandtg -hour $DTG )
+
+  # Get all active obtypes
+  obtypes=""
+  if [ "$MULTITASK" == "yes" ]; then
+    if [ "$sfc" -eq "1" ]; then
+      [ "$SYNOP_OBS" == 1 -o "$BUOY_OBS" == 1 ] && obtypes="$obtypes synop ship dribu"
+    else
+      [ "$SYNOP_OBS" == 1 -o "$BUOY_OBS" == 1 ] && obtypes="$obtypes synop ship dribu"
+      [ "$AIRCRAFT_OBS" == 1 ] && obtypes="$obtypes aircraft"
+      [ "$AMV_OBS"      == 1 ] && obtypes="$obtypes amv"
+      [ "$TEMP_OBS"     == 1 ] && obtypes="$obtypes temp"
+      [ "$PILOT_OBS"    == 1 ] && obtypes="$obtypes pilot"
+      [ "$AMSUA_OBS"    == 1 ] && obtypes="$obtypes amsua"
+      [ "$AMSUB_OBS"    == 1 ] && obtypes="$obtypes amsub mhs"
+      [ "$IASI_OBS"     == 1 ] && obtypes="$obtypes iasi"
+      [ "$PAOB_OBS"     == 1 ] && obtypes="$obtypes paob"
+      [ "$SCATT_OBS"    == 1 ] && obtypes="$obtypes scatt"
+      [ "$LIMB_OBS"     == 1 ] && obtypes="$obtypes limb"
+      [ "$RADAR_OBS"    == 1 ] && obtypes="$obtypes radar"
+    fi
+  else
+    obtypes=$obtype
+    [ "$sfc" -eq "1" ] &&  obtypes="synop ship dribu"
+    [ "$obtype" == "amsub" ] &&  obtypes="amsub mhs"
+  fi
+
+  # Set baseroot  
+  case $base in
+    "ccma")
+      baseroot="odb_ccma"
+    ;;
+    "ecma")
+      baseroot="odbvar"
+    ;;
+    *)
+     echo "Base $base not defined!"
+     exit 1
+    ;;
+  esac
+ 
+  oper_file=$WRK/var_oper.dat
+  basedir=$base 
+  if [ "$sfc" -eq "1" ]; then
+    basedir=${base}_sfc
+    case $base in
+      "ecma")
+        baseroot="odb_can"
+        oper_file=$WRK/can_oper.dat
+      ;;
+      *)
+       echo "Base $base not defined for $obtype!"
+       exit 1
+      ;;
+    esac
+  fi
+
+  if [ "$WRK" == "" -o "$HM_LIB" == "" ]; then
+    echo "The following environment variables are needed:"
+    echo "       WRK: $WRK"
+    echo "    HM_LIB: $HM_LIB"
+    exit 1
+  fi
+
+  # Set the path to the OBSMON scripts
+  export OBSMON_SCR=$HM_LIB/util/monitor/scr/
+
+  date
+  pids=""
+  [ -d $WRK ] || mkdir -p $WRK 
+  cd $WRK || exit 1
+
+  if [ -d $WRK/$baseroot/$BASE ]; then
+   
+    [ -d $WRK/obsmon ] || mkdir -p $WRK/obsmon
+    cd $WRK/obsmon || exit 1
+ 
+    # Create this base
+    [ -d $basedir ] || mkdir -p $basedir
+    cd $basedir || exit 1
+
+    # Make statistics
+    for obtype in $obtypes; do
+      part=1
+      part2=1
+      # Divide some types in several subparts
+      instrument_name=""
+      instrument_selections="all"
+      case $obtype in
+        "iasi")
+          instrument_name="IASI"
+          instrument_selections="3 4"
+        ;;
+        "amsua")
+          instrument_name="AMSUA"
+          instrument_selections="206 207 208 209 223 3 4"
+        ;;
+        "amsub")
+          instrument_name="AMSUB"
+          instrument_selections="206 207 208 209"
+        ;;
+        "mhs")
+          instrument_name="MHS"
+          instrument_selections="223 3 4"
+        ;;
+        "temp")
+          instrument_name="TEMP"
+          instrument_selections="2 3 4 7"
+        ;;
+        "aircraft")
+          instrument_name="AIRCRAFT"
+          instrument_selections="2 3 4"
+        ;;
+        "pilot")
+          instrument_name="PILOT"
+          instrument_selections="3 4"
+        ;;
+      esac
+
+      # Set channels or subtypes pr. instrument and satelite
+      for instrument_selection in $instrument_selections; do
+        selection="all"
+        satelite_name=""
+        channels="all"
+        case $obtype in
+          "iasi")
+            case $instrument_selection in
+              3)
+                satelite_name="IASI_METOP1"
+                selection="satelites=$instrument_selection"
+                # All 366 selected channels
+                #channels="16 38 49 51 55 57 59 61 63 66 70 72 74 79 81 83 85 87 89 92 95 97 99 101 104 106 109 111 113 116 119 122 125 128 131 133 135 138 141 144 146 148 151 154 157 159 161 163 165 167 170 173 176 178 179 180 183 185 187 189 191 193 195 197 199 201 203 205 207 210 212 214 217 219 222 224 226 228 230 232 234 236 239 241 242 243 246 249 252 254 256 258 260 262 265 267 269 271 272 273 275 278 280 282 284 286 288 290 292 294 296 299 301 303 306 308 310 312 314 316 318 320 323 325 327 329 331 333 335 337 339 341 343 345 347 350 352 354 356 358 360 362 364 366 369 371 373 375 377 379 381 383 386 389 398 401 404 407 410 414 416 426 428 432 434 439 445 457 515 546 552 559 566 571 573 646 662 668 756 867 906 921 1027 1046 1090 1121 1133 1191 1194 1271 1479 1509 1513 1521 1536 1574 1578 1579 1585 1587 1626 1639 1643 1652 1658 1671 1786 1805 1884 1946 1991 2019 2094 2119 2213 2239 2245 2271 2321 2398 2701 2741 2745 2819 2889 2907 2910 2919 2939 2944 2948 2951 2958 2977 2985 2988 2991 2993 3002 3008 3014 3027 3029 3036 3047 3049 3053 3058 3064 3069 3087 3093 3098 3105 3107 3110 3127 3136 3151 3160 3165 3168 3175 3178 3207 3228 3244 3248 3252 3256 3263 3281 3303 3309 3312 3322 3339 3375 3378 3411 3438 3440 3442 3444 3446 3448 3450 3452 3454 3458 3467 3476 3484 3491 3497 3499 3504 3506 3509 3518 3522 3527 3540 3555 3575 3577 3580 3582 3586 3589 3599 3645 3653 3658 3661 3943 4032 5130 5368 5371 5379 5381 5383 5397 5399 5401 5403 5405 5455 5480 5483 5485 5492 5502 5507 5509 5517 5558 5988 5992 5994 6003 6350 6458 6463 6601 6962 6978 6980 6982 6985 6987 6989 6991 6993 6995 6997 7001 7267 7269 7389 7424 7426 7428 7885 8007"
+                # MetCoOp selected channels
+                channels="38 51 63 85 104 109 167 173 180 185 193 199 205 207 212 224 230 236 239 242 243 249 252 265 275 294 296 306 333 337 345 352 386 389 432 2701 2819 2910 2919 2991 2993 3002 3008 3014 3027 3069 3087 3098 3207 3228 3281 3309 3322 3339 3438 3442 3484 3491 3499 3506 3575 3582 3658 4032"
+              ;;
+              4)
+                satelite_name="IASI_METOP2"
+                selection="satelites=$instrument_selection"
+                # All 366 selected channels
+                #channels="16 38 49 51 55 57 59 61 63 66 70 72 74 79 81 83 85 87 89 92 95 97 99 101 104 106 109 111 113 116 119 122 125 128 131 133 135 138 141 144 146 148 151 154 157 159 161 163 165 167 170 173 176 178 179 180 183 185 187 189 191 193 195 197 199 201 203 205 207 210 212 214 217 219 222 224 226 228 230 232 234 236 239 241 242 243 246 249 252 254 256 258 260 262 265 267 269 271 272 273 275 278 280 282 284 286 288 290 292 294 296 299 301 303 306 308 310 312 314 316 318 320 323 325 327 329 331 333 335 337 339 341 343 345 347 350 352 354 356 358 360 362 364 366 369 371 373 375 377 379 381 383 386 389 398 401 404 407 410 414 416 426 428 432 434 439 445 457 515 546 552 559 566 571 573 646 662 668 756 867 906 921 1027 1046 1090 1121 1133 1191 1194 1271 1479 1509 1513 1521 1536 1574 1578 1579 1585 1587 1626 1639 1643 1652 1658 1671 1786 1805 1884 1946 1991 2019 2094 2119 2213 2239 2245 2271 2321 2398 2701 2741 2745 2819 2889 2907 2910 2919 2939 2944 2948 2951 2958 2977 2985 2988 2991 2993 3002 3008 3014 3027 3029 3036 3047 3049 3053 3058 3064 3069 3087 3093 3098 3105 3107 3110 3127 3136 3151 3160 3165 3168 3175 3178 3207 3228 3244 3248 3252 3256 3263 3281 3303 3309 3312 3322 3339 3375 3378 3411 3438 3440 3442 3444 3446 3448 3450 3452 3454 3458 3467 3476 3484 3491 3497 3499 3504 3506 3509 3518 3522 3527 3540 3555 3575 3577 3580 3582 3586 3589 3599 3645 3653 3658 3661 3943 4032 5130 5368 5371 5379 5381 5383 5397 5399 5401 5403 5405 5455 5480 5483 5485 5492 5502 5507 5509 5517 5558 5988 5992 5994 6003 6350 6458 6463 6601 6962 6978 6980 6982 6985 6987 6989 6991 6993 6995 6997 7001 7267 7269 7389 7424 7426 7428 7885 8007"
+                # MetCoOp selected channels
+                channels="38 51 63 85 104 109 167 173 180 185 193 199 205 207 212 224 230 236 239 242 243 249 252 265 275 294 296 306 333 337 345 352 386 389 432 2701 2819 2910 2919 2991 2993 3002 3008 3014 3027 3069 3087 3098 3207 3228 3281 3309 3322 3339 3438 3442 3484 3491 3499 3506 3575 3582 3658 4032"
+              ;;
+              *) 
+                echo "Using all channels for instrumentID $instrument_selection"
+              ;;
+            esac
+          ;;
+          "amsua")
+            case $instrument_selection in
+              "206")
+                satelite_name="AMSUA_NOAA15"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              "207")
+                satelite_name="AMSUA_NOAA16"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              "208")
+                satelite_name="AMSUA_NOAA17"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              "209")
+                satelite_name="AMSUA_NOAA18"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              "223")
+                satelite_name="AMSUA_NOAA19"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              "3")
+                satelite_name="AMSUA_METOP1"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              "4")
+                satelite_name="AMSUA_METOP2"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+              ;;
+              *)
+                echo "Using all channels for instrumentID $instrument_selection"
+              ;;
+            esac
+          ;;
+          "amsub")
+            case $instrument_selection in
+              "206")
+                satelite_name="AMSUB_NOAA15"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              "207")
+                satelite_name="AMSUB_NOAA16"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              "208")
+                satelite_name="AMSUB_NOAA17"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              "209")
+                satelite_name="AMSUB_NOAA18"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              *)
+                echo "Using all channels for instrumentID $instrument_selection"
+              ;;
+            esac
+          ;;
+          "mhs")
+            case $instrument_selection in
+              "223")
+                satelite_name="MHS_NOAA19"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              "3")
+                satelite_name="MHS_METOP1"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              "4")
+                satelite_name="MHS_METOP2"
+                selection="satelites=$instrument_selection"
+                #channels="1 2 3 4 5"
+              ;;
+              *)
+                echo "Using all channels for instrumentID $instrument_selection"
+              ;;
+            esac
+          ;;
+          "temp"|"aircraft"|"pilot")
+            selection="vars=$instrument_selection"
+          ;;
+          *)
+            echo "No specification for obtype=${obtype}. Using default settings."
+          ;;
+        esac
+        if [ "$MULTITASK" == "yes" ]; then
+          for channel in $channels; do
+
+            # Set arguments & make statistics
+            need_args1=0
+            [ "$instrument_name" != "" -a "$selection" != "all" ] && need_args1=1
+            if [ "$need_args1" -eq 1 ]; then
+              if [ "$satelite_name" != "" -a "$channel"   != "all" ]; then
+                echo "obsmon_stat_odb $DTG $DTG $base $obtype $baseroot ${base}_${obtype}_${part} \"$instrument_name\" \"$selection\" \"$satelite_name\" \"$channel\"" >> $sigfile
+              else
+                echo "obsmon_stat_odb $DTG $DTG $base $obtype $baseroot ${base}_${obtype}_${part} \"$instrument_name\" \"$selection\"" >> $sigfile
+              fi
+            else
+              echo "obsmon_stat_odb $DTG $DTG $base $obtype $baseroot ${base}_${obtype}_${part}" >> $sigfile
+            fi
+            part=$(( $part + 1 ))
+          done
+        else
+          set -x
+          for channel in $channels; do
+
+            # Create and enter working directory
+            [ -d ${base}_${obtype}_${part} ] || mkdir -p ${base}_${obtype}_${part}
+            cd ${base}_${obtype}_${part} || exit 1
+
+            # Delete existing databases if any
+            rm -f $DTG/*.db
+
+            # Set arguments
+            args1=""
+            args2=""
+            [ "$instrument_name" != "" -a "$selection" != "all" ] && args1="$instrument_name $selection"
+            if [ "$args1" != "" ]; then
+              [ "$satelite_name" != "" -a "$channel"   != "all" ] && args2="$satelite_name $channel"
+            fi
+
+            # Make statistics
+            obsmon_stat_odb $DTG $DTG $base $obtype $baseroot ${base}_${obtype}_${part} $args1 $args2 1> $WRK/obsmon/$basedir/${base}_${obtype}_${part}/monitor_stat.log  2>&1 &
+            pid=$!
+            echo "Obsmon started in the background for ${base}_${obtype}_${part} as process $pid."
+            echo "Logfile: $WRK/obsmon/$basedir/${base}_${obtype}_${part}/monitor_stat.log"
+            pids="$pids $pid"
+            part=$(( $part + 1 ))
+            part2=$(( $part2 + 1 ))
+            cd .. || exit 1
+
+            if [ "$part2" -eq "$maxPartsAtSameTime" ]; then
+              echo "Waiting for $maxPartsAtSameTime tasks to finish...."
+              # Test if all process are finished
+              for pid in $pids; do
+                echo "Checking pid: $pid"
+                ret=0
+                wait $pid || ret=1
+                if [ "$ret" -ne "0" ]; then
+                  echo "ERROR:"
+                  echo "PID $pid returned with error $ret"
+                  gather_logs
+                  exit 1
+                fi
+              done
+              pids=""
+              part2=1
+            fi
+          done
+        fi
+      done
+    done
+  else
+    echo "No ODB $WRK/$baseroot/$BASE exist for $BASE"
+    if [ "$RUNNING_MODE" == "operational" -a -f $oper_file ]; then
+      echo "It seems no assimilation was done for $basedir/$BASE"
+    else
+      exit 1
+    fi
+  fi
+  [ "$MULTITASK" == "yes" ] && echo "COMPLETE" >> $sigfile
+
+  # Do multitasking
+  date
+  if [ "$MULTITASK" == "yes" ]; then
+    echo "Start processing of ${sigfile} with ${OBSMON_MAXPIDS-16} parallell tasks..."
+    perl -S multi_task.pl -m ${OBSMON_MAXPIDS-16} -F "$sigfile" $task || exit 1
+  else
+    # Wait for pids to finiish
+    echo "Waiting for obsmon_stat to finish...."
+    # Test if all process are finished
+    for pid in $pids; do
+      echo "Checking pid: $pid"
+      ret=0
+      wait $pid || ret=1
+      if [ "$ret" -ne "0" ]; then
+        echo "ERROR:"
+        echo "PID $pid returned with error $ret"
+        gather_logs
+        exit 1
+      fi
+    done
+    date
+
+    # Gather all logfiles
+    gather_logs
+  fi
+  date
+
+  # Make a large SQLITE database from the small ones
+  for obtype in $obtypes; do
+    [ -f ${base}_${obtype}_$DTG.sql ] && rm ${base}_${obtype}_$DTG.sql
+    for f in `ls -1 ${base}_${obtype}_*/$DTG/*.db`; do 
+      $BINDIR/sqlite3 -vfs unix-none $f ".dump"|sed -e "s/CREATE TABLE/CREATE TABLE IF NOT EXISTS/" >> ${base}_${obtype}_$DTG.sql
+    done
+    [ -f ${base}_${obtype}_$DTG.db ] && rm ${base}_${obtype}_$DTG.db
+    $BINDIR/sqlite3 -vfs unix-none ${base}_${obtype}_$DTG.db ".read ${base}_${obtype}_$DTG.sql"
+    [ -f ${base}_${obtype}_$DTG.sql ] && rm ${base}_${obtype}_$DTG.sql
+
+    # Move the larger SQLITE database to the archive
+    [ -d $EXTRARCH/$OBSMON_EXP/$basedir/$DTG ] || mkdir -p $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/
+    mv ${base}_${obtype}_$DTG.db $EXTRARCH/$OBSMON_EXP/$basedir/$DTG/${base}_${obtype}_$DTG.db
+  done
+  echo "Obsmon_stat has finished successfully"
+fi
+# Normal exit
+trap - 0
+exit

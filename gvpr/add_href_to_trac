@@ -1,0 +1,4 @@
+N[type=="ecflowtask"] { 
+  if ($.script == "")  $.script=$.name;
+  $.href= "https://hirlam.org/trac/browser/Harmonie/scr/" + $.script;
+} 

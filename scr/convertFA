@@ -1,0 +1,210 @@
+#!/bin/bash
+# convert Fa files to netcdf according to CF1.4
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+echo "Convert FA files to netCDF started..."
+
+# Create end date
+NDTG=$( mandtg $YY${MM}${DD}${HH} + $LL )
+
+if [ $PHYSICS = 'alaro' ] ; then
+
+# Build namelist with all fields + calculate tot precip
+cat > def_nam <<EOF
+&naminterp
+pppkey%name   = 'TOT.WATER.PRECIP',
+out_int    = $FPOUTINT,
+start_date = ${DTG:0:8},
+end_date   = ${NDTG:0:8},
+/
+EOF
+else
+
+cat > def_nam <<EOF
+&naminterp
+out_int    = $FPOUTINT,
+start_date = ${DTG:0:8},
+end_date   = ${NDTG:0:8},
+/
+EOF
+fi
+
+# Convert to netCDF/grib
+if [ "$POSTP" != "none" ] ; then
+    FPOUTLIST=$( perl -S Output_freq.pl POSTLIST )
+    for MLL in $FPOUTLIST ; do
+        FFFF=`perl -e "printf('%4.4i', '$MLL')"`
+        if [ "$ARCHIVE_FORMAT" = 'nc' ] ; then
+          if [ "$NCNAMES" = 'climate' ] ; then
+            ${BINDIR}/gl -nc $ARCHIVE/PF${CNMEXP}${DOMAIN}+$FFFF -n def_nam -igd || exit 1
+          else
+            ${BINDIR}/gl -ufn -nc $ARCHIVE/PF${CNMEXP}${DOMAIN}+$FFFF -n def_nam -igd || exit 1
+          fi
+        else
+            ${BINDIR}/gl -p $ARCHIVE/PF${CNMEXP}${DOMAIN}+$FFFF -n def_nam -igd || exit 1
+        fi
+    done
+else
+    OUTLIST=$( perl -S Output_freq.pl OUTLIST )
+    for MLL in $OUTLIST ; do
+        FFFF=`perl -e "printf('%4.4i', '$MLL')"`
+        if [ "$ARCHIVE_FORMAT" = 'nc' ] ; then
+          if [ "$NCNAMES" = 'climate' ] ; then
+            ${BINDIR}/gl -nc $ARCHIVE/ICMSH${CNMEXP}+$FFFF -n def_nam -igd || exit 1
+          else
+            ${BINDIR}/gl -ufn -nc $ARCHIVE/ICMSH${CNMEXP}+$FFFF -n def_nam -igd || exit 1
+          fi
+        else
+            ${BINDIR}/gl -p $ARCHIVE/ICMSH${CNMEXP}+$FFFF -n def_nam -igd || exit 1
+        fi
+    done
+fi
+
+if [ "$SURFEX_LSELECT" = "yes" ] ; then
+
+# Build namelist with all fields
+cat > def_nam_sfx <<EOF
+&naminterp
+out_int    = $SFXOUTINT,
+start_date = ${DTG:0:8},
+end_date   = ${NDTG:0:8},
+/
+EOF
+    
+    SFXLIST=$( perl -S Output_freq.pl SFXLIST )
+    for MLL in $SFXLIST ; do
+        FFFF=`perl -e "printf('%4.4i', '$MLL')"`
+        if [ "$ARCHIVE_FORMAT" = 'nc' ] ; then
+          if [ "$NCNAMES" = 'climate' ] ; then
+            ${BINDIR}/gl -nc $ARCHIVE/ICMSH${CNMEXP}+$FFFF.sfx -n def_nam_sfx -igd || exit 1
+          else
+            ${BINDIR}/gl -ufn -nc $ARCHIVE/ICMSH${CNMEXP}+$FFFF.sfx -n def_nam_sfx -igd || exit 1
+          fi
+        else
+            ${BINDIR}/gl -p $ARCHIVE/ICMSH${CNMEXP}+$FFFF.sfx -n def_nam_sfx -igd || exit 1
+        fi
+    done
+fi
+
+# Check how many patches that are used.
+npatch=$( grep NPATCH ${HM_LIB}/nam/surfex_namelists.pm | awk -F"'" '{ print $2 }' | awk -F"," '{ print $1 }' )
+
+## Merge from 12 to 2 patches
+if [ "$npatch" = "12" ] ; then
+
+    # Build namelist for fraction values.
+cat > nam_patch <<EOF
+&naminterp
+readkey%name = 'X001PATCH','X002PATCH','X003PATCH','X004PATCH','X005PATCH',
+'X006PATCH','X007PATCH','X008PATCH','X009PATCH','X010PATCH','X011PATCH',
+'X012PATCH',
+out_int = 24,
+start_date = 20100101,
+end_date = 20100102,
+/
+EOF
+    
+    if [ "$NCNAMES" = 'climate' ] ; then
+      ${BINDIR}/gl -nc $WRK/fc_start_sfx -n nam_patch || exit 1
+    else
+      ${BINDIR}/gl -ufn -nc $WRK/fc_start_sfx -n nam_patch || exit 1
+    fi
+    
+    rmin=-1e+20
+    rmax=1e+20
+    cdo cat pf_P04*.nc pf_P05*.nc pf_P06*.nc pf_forest_tmp
+    cdo timsum pf_forest_tmp pf_forest.nc
+    rm pf_forest_tmp
+    
+    cdo cat pf_P01*.nc pf_P02*.nc pf_P03*.nc pf_P07*.nc pf_P08*.nc pf_P09*.nc pf_P10*.nc pf_P11*.nc pf_P12*.nc pf_openland_tmp
+    cdo timsum pf_openland_tmp pf_openland.nc
+    rm pf_openland_tmp
+    
+    # convert fraction files from SURFXINI
+    # This is only for 12 patches
+    forest_p="04 05 06"
+    openland_p="01 02 03 07 08 09 10 11 12"
+    
+    # variable list for fields on patches, exclude pf file
+    var_list=$( ls *_P01_*.nc | grep -v '^pf_' | awk -F"P" '{ print $1 }' | uniq )
+    
+    # retrieve date
+    dat=$( ls *_P01_*.nc | grep -v '^pf_P' | awk -F"." '{ print $1 }' | awk -F"_" '{ print $NF }' | uniq )
+
+    # remove date from patch fraction files
+    files=$( ls pf_P*.nc )
+    for f in $files ;do 
+        mv $f ${f%_*}.nc
+    done
+    
+    # 1. multiply each variable with corresponding patch fraction
+    # 2. add patches to forest and open land
+    # 3. weighted average
+    for v in $var_list ; do
+        for p in $forest_p ; do
+            cdo setvrange,$rmin,$rmax pf_P${p}.nc pf_missval
+            cdo mul ${v}P${p}_$dat.nc pf_missval ${v}p${p}_pf
+            rm pf_missval
+        done
+
+        cdo enssum ${v}p*_pf tot_${v}pf
+        cdo div tot_${v}pf pf_forest.nc ${v}forest_$dat.nc
+        rm ${v}p*_pf
+        rm tot_${v}pf
+    
+        for p in $openland_p ; do
+            cdo setvrange,$rmin,$rmax pf_P${p}.nc pf_missval
+            cdo mul ${v}P${p}_$dat.nc pf_missval ${v}p${p}_pf
+            rm pf_missval
+        done
+
+        cdo enssum ${v}p*_pf tot_${v}pf
+        cdo div tot_${v}pf pf_openland.nc ${v}openland_$dat.nc
+        rm ${v}p*_pf
+        rm tot_${v}pf
+
+        # remove patch files for current variable
+        rm ${v}P??_$dat.nc
+    done
+
+    rm pf_P??.nc
+    rm pf_forest.nc pf_openland.nc
+
+    # set valid range
+    files=$( ls *.nc | grep -v 'forest\|openland' )
+    for f in $files ; do
+        cdo setvrange,$rmin,$rmax $f tmp_$f
+        mv tmp_$f $f
+    done
+fi
+
+# Move nc files to ARCHIVE
+mv *.nc $ARCHIVE/.
+
+# Clean archive
+CLEAN_FA=${CLEAN_FA:-no}
+
+if [ $CLEAN_FA = "yes" ] ; then
+ if [ "$POSTP" != "none" ] ; then
+    rm $ARCHIVE/PFHARM*
+ fi
+if [ "$SURFEX_LSELECT" == "yes" ] ; then
+    rm $ARCHIVE/ICMSH${CNMEXP}*.sfx
+ else
+    ls $ARCHIVE/ICMSH${CNMEXP}*.sfx | grep -v $ARCHIVE/ICMSH${CNMEXP}+$FFFF.sfx | xargs rm -f
+ fi
+fi
+
+cd ..
+rm -fr $WDIR
+
+trap - 0
+exit

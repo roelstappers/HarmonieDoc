@@ -1,0 +1,264 @@
+#!/bin/bash
+# Trajectory run IFS conf c002
+
+# Infiles: 
+# 
+#    #-hr fg, lr an in, lr fg in
+#      ICMSHTRAJINIT ICMSHTRAJANIN ICMSHTRAJFGIN
+#    #-LateralBoundary conditions
+#      ELSCFTRAJALBC000 ELSCFTRAJALBC001 ELSCFTRAJALBC002
+#
+# Outfile
+#
+#   # Analysis at the center of ass time window
+#     ICMSHTRAJ+0000 
+##########################################################
+
+
+. header.sh
+. functions.ksh
+. include.ass
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+# ODB settings
+#---------------------------------------------------
+# Shuffle will operate from ANALYSISTIME - $SHUFFLE_LMARGIN
+# and ANALYSISTIME + $SHUFFLE_RMARGIN (in minutes)
+export ODB_SRCPATH_CCMA=$WRK/odb_ccma/CCMA
+export ODB_DATAPATH_CCMA=$WRK/odb_ccma/CCMA
+export ODB_SRCPATH_ECMA=$WRK/odb/ECMA
+export ODB_DATAPATH_ECMA=$WRK/odb/ECMA
+export TO_ODB_ECMWF=0
+export ODB_CMA=CCMA
+export TO_ODB_SWAPOUT=0
+export ODB_DEBUG=0
+export ODB_CTX_DEBUG=0
+export ODB_REPRODUCIBLE_SEQNO=2
+export ODB_STATIC_LINKING=1
+export ODB_ANALYSIS_DATE=${YMD}
+export ODB_ANALYSIS_TIME=${HH}0000
+export ODB_IO_METHOD=1
+export ODB_ECMA_CREATE_POOLMASK=1
+export ODB_CCMA_CREATE_POOLMASK=1
+export ODB_CCMA_CREATE_DIRECT=1
+
+export IOASSIGN=$WRK/odb_ccma/CCMA/IOASSIGN
+
+##########################################################
+
+loop=${1?"Loop number not given as input"}
+res=$( echo $ILRES | cut -d, -f$loop )
+
+if [ "$CH_RES_SPEC" = yes ] ; then
+
+  cp   $WRK/anb_hr_begwin ICMSHTRAJINIT
+  cp   $WRK/anb_hr_begwin ICMSHTRAJANIN
+  cp   $WRK/anb_hr_begwin ICMSHTRAJFGIN
+  ln -sf $WRK/anb_hr_begwin ELSCFTRAJALBC000
+
+else
+
+
+# Fetching hr fg, lr fg, lr an
+ln -sf  $WRK/first_guess ICMSHTRAJINIT
+ln -sf  $ARCHIVE/an_begwin ICMSHTRAJANIN
+ln -sf  $WRK/ELSCFHARM_${res}x_hr+0002 ICMSHTRAJFGIN
+ln -sf  $WRK/first_guess ELSCFTRAJALBC000
+
+fi
+# Boundaries
+LLL=$( perl -e "printf('%3.3i', $FCINT - 1)" )
+BDF1=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+BDF2=$( grep "001|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+BDF3=$( grep "002|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+ln -sf $WRK/first_guess ELSCFTRAJALBC000
+ln -sf ${BDF1}          ELSCFTRAJALBC001
+ln -sf ${BDF2}          ELSCFTRAJALBC002
+ln -sf ${BDF3}          ELSCFTRAJALBC003
+
+#--- fetching consts
+cp ${HM_LIB}/const/bias_corr/rszcoef_fmt .
+cp ${HM_LIB}/const/bias_corr/cstlim_noaa.dat .
+
+#--- RTTOV coeffs
+ln -s ${HM_SAT_CONST}/* .
+ln -sf ./rtcoef_metop_2_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_2_iasi.dat
+
+#--- RADIOSONDE BIAS CORRECTION
+for tabfile in table1 table2 table3; do
+   cp ${HM_LIB}/const/bias_corr/$tabfile .
+done
+
+
+
+#--- Get the VarBC coeffs
+
+if [ $LVARBC = "T" ]; then
+
+   [[ -s $WRK/VARBC.cycle ]] || \
+    { echo "You don t have VARBC table from the earlier run \
+    please check the content of your WORKDIR " ; exit 1 ; }
+    cp $WRK/VARBC.cycle  ./VARBC.cycle
+
+fi
+
+IUPTRA=$(( $loop - 1 ))
+
+# Forecast settings shared between Forecast and 4DV[screen|minim|traj]
+. forecast_model_settings.sh
+
+
+
+# Input data for MSG cloud initialization
+export LMSGINIT=.FALSE. 
+if [ "$USE_MSG" = yes ] ; then
+  MSGFILE=$MSG_PATH/MSGcloud$DTG
+  if [ -e $MSGFILE ] ; then
+   LMSGINIT=.TRUE.
+   ln -sf $MSGFILE ICMSHHARMANIN
+  else
+   LMSGINIT=.FALSE.
+  fi
+fi
+
+N1SFXHIS=0
+if [ "$SURFACE" == surfex ] ; then
+
+  N1SFXHIS=1
+ 
+ # Surfex output format
+  if [ "$SURFEX_OUTPUT_FORMAT" == lfi ] ; then
+    LFMWRIT=.TRUE.
+    LFMREAD=.TRUE.
+    LFAPGD=.FALSE.
+  else
+    # Note that we read and write an LFI file
+     LFMWRIT=.TRUE.
+     LFMREAD=.FALSE.
+     LFAPGD=.TRUE.
+  fi
+fi
+
+
+#--- prepare namelist
+NAMELIST=$WRK/$WDIR/namelist_traj4d
+Get_namelist traj4d $NAMELIST
+
+sed \
+    -e "s/NCONF=NCONF/NCONF=002/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"TRAJ\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h2\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    -e "s/LLINC/$LLINC/" \
+    -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=$N1SFXHIS/" \
+    -e "s/ZNEN1/$ZNEN1/g" \
+    -e "s/ZNEN2/$ZNEN2/g" \
+    -e "s/ZNEK0/$ZNEK0/g" \
+    -e "s/ZNEK1/$ZNEK1/g" \
+    -e "s/ZNRADFR/$ZNRADFR/g" \
+    -e "s/NBPROC/$NPROC/g"   \
+    -e "s/NPROCX/$NPROCX/g"  \
+    -e "s/NPROCY/$NPROCY/g"  \
+    -e "s/=LFMWRIT/=$LFMWRIT/g" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    -e "s/ICLOUDFRACTI/0/g" \
+    -e "s/LCLOUDFRACTI/.TRUE./g" \
+    -e "s/ITKE/-1/g" \
+    -e "s/NREDNMC/${REDNMC}/" \
+    -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+    -e "s/NBUPTRA/${IUPTRA}/g" \
+    -e "s/LVARBC=LVARBC/LVARBC=$LVARBC/g" \
+   $NAMELIST > fort.4 || \
+   { echo "Sorry, no namelist!" ; exit 1 ; }
+
+#
+# Setup SURFEX files if applicable
+#
+LPERTSURF=.FALSE.
+if [ "$SURFACE" = surfex ] ; then
+  # Copy namelist
+  NAMELIST="$WRK"/"$WDIR"/namelist_sfx_forecast
+  Get_namelist sfx_forecast $NAMELIST
+
+  sed -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$LPERTSURF/" \
+       -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$LPERTSURF/" \
+  $NAMELIST > EXSEG1.nam || \
+    { echo "Sorry, no namelist!" ; exit 1 ; }
+
+  # Copy the surfex file
+  if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+    ln -sf $WRK/fc_start_sfx  TEST.lfi
+    ln -sf "$CLIMDIR"/PGD.lfi .
+  else
+    # Note that we convert to lfi first!
+    ln -sf "$CLIMDIR"/Const.Clim.sfx Const.Clim.sfx
+    ln -sf "$WRK"/fc_start_sfx ICMSHTRAJINIT.sfx
+    ls -l ICMSHTRAJINIT.sfx 
+    ls -l "$WRK"/fc_start_sfx
+  fi
+
+  ln -sf $CLIMDIR/*.bin .
+
+fi
+
+# Link RRTM files
+ln -sf "$HM_LIB"/const/rrtm_const/* .
+
+Cat_logs fort.4 EXSEG1.nam
+
+$MPPEXEC $BINDIR/$MODEL || exit 1
+
+Cat_logs NODE.001_01
+
+[[ -s drhook.prof.1 ]] && { tar cvf "${TASK}"_prof.tar drhook.prof.* ; mv "${TASK}"_prof.tar "$ARCHIVE" ; }
+
+#--- Save the VarBC coeffs
+if [ $LVARBC = "T" ]; then
+ cp ./VARBC.cycle $WRK/
+fi
+
+
+if [ $loop = $NOUTERLOOP ]; then
+# Store data and update fg and fc_start links
+# SURFEX
+if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+  FILE=AROMOUT_.0001.lfi
+else
+  # Note that we write have written an LFI file
+  FILE=ICMSHTRAJ+0001.sfx
+  MM_MAIN=$(mandtg -month "$DTG")
+  ln -s "$CLIMDIR"/m"$MM_MAIN" m"$MM_MAIN"
+  conv sfxlfi2fa $FILE AROMOUT_.0001.lfi m"$MM_MAIN" || exit 1
+fi
+mv $FILE $WRK/.
+ln -sf $WRK/$FILE $WRK/first_guess_sfx
+ln -sf $WRK/$FILE $WRK/fc_start_sfx
+
+ls -lrt
+cp ICMSHTRAJ+0000 ../.
+
+
+# Upper air
+FILE=ICMSHTRAJ+0001
+cp $FILE $ARCHIVE/an
+mv $FILE $WRK/.
+ln -sf $WRK/$FILE $WRK/first_guess
+ln -sf $WRK/$FILE $WRK/fc_start
+
+fi
+
+# Normal exit
+cd $WRK
+rm -fr $WDIR
+trap - 0
+exit
+

@@ -1,0 +1,60 @@
+#!/bin/bash
+
+#
+# EKF SURFEX 
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+
+#
+# Define forcing files 
+#
+
+offline_forc_files="Forc_CO2.txt Forc_DIR.txt Forc_DIR_SW.txt Forc_LW.txt Forc_PS.txt Forc_QA.txt Forc_RAIN.txt Forc_SCA_SW.txt Forc_SNOW.txt Forc_TA.txt Forc_WIND.txt Params_config.txt"
+
+#
+# Get atmospheric forcing data 
+#
+for forc_file in $offline_forc_files; do
+  cp -f $WRK/forcing_${DTG}_${FCINT}/$forc_file $forc_file
+done
+
+Get_namelist sfx_forecast $WRK/$WDIR/OPTIONS.nam
+Cat_logs OPTIONS.nam
+
+# Copy the surfex file
+cp $WRK/fc_start_sfx PREP.lfi
+
+# PGD
+ln -sf $CLIMDIR/PGD.lfi .
+
+# Turn off MPI initialization in Dr.Hook
+export DR_HOOK_NOT_MPI=1
+
+$MPPEXEC $BINDIR/SURFEX || exit
+
+Cat_logs LISTING_OUTPUT
+
+LLLL=`perl -e "printf('%4.4i', '$LL')"` 
+# Archive output
+mv PREP.lfi $ARCHIVE/SURFOUT_PREP.lfi
+mv SURFOUT.lfi $ARCHIVE/AROMOUT_.${LLLL}.lfi
+mv SURFOUT*.lfi $ARCHIVE
+
+#------------------------------- 
+# tidy up and terminate 
+#------------------------------- 
+
+# Normal exit
+cd ..
+#rm -fr $WDIR
+trap - 0
+ 
+exit 0

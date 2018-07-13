@@ -1,0 +1,639 @@
+#!/bin/bash
+#
+#  Building the climatological files with a linear grid for 
+#  the prefered domain
+#
+#  ! For any change in the geometry, modify only the first part
+#  of the namelist file, i.e. "nam923_description".
+#
+#  
+#
+
+. header.sh
+. functions.ksh
+
+cd $WRK || exit
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+
+# Get CLIMDIR NLON NLAT NSMAX NMSMAX as arguments
+LCLIMDIR=${1?"Give CLIMDIR in config_exp.h before running Climate"}
+LNLON=${2?"Give NLON in config_exp.h before running Climate"}
+LNLAT=${3?"Give NLAT in config_exp.h before running Climate"}
+LNSMAX=${4?"Give NSMAX in config_exp.h before running Climate"}
+LNMSMAX=${5?"Give NMSMAX in config_exp.h before running Climate"}
+
+echo "Climate: $LCLIMDIR, $LNLON, $LNLAT, $LNSMAX, $LNMSMAX"
+
+###############################################
+# Determine use of smoothing or not
+case $GRID_TYPE in
+     "LINEAR" )
+       LSPSMORO=.TRUE.
+       TRUNC=2
+   ;;
+     "QUADRATIC" )
+       LSPSMORO=.FALSE.
+       TRUNC=3
+   ;;
+     "CUBIC" )
+       LSPSMORO=.FALSE.
+       TRUNC=4
+   ;;
+     "CUSTOM" )
+       LSPSMORO=.FALSE.
+       TRUNC=2.4
+   ;;
+   *)
+     echo "Wrong grid type"$GRID_TYPE
+     exit 1
+   ;;
+esac
+
+# Redefining the spectral truncation and C+I zone
+# if not given by user
+if [ $LNMSMAX -eq 0 ] ; then
+  TMPVAR=`expr $LNLON - 2`
+  LNMSMAX=`perl -e "print int( $TMPVAR / $TRUNC )"`
+fi
+
+if [ $LNSMAX -eq 0 ] ; then
+  TMPVAR=`expr $LNLAT - 2`
+  LNSMAX=`perl -e "print int( $TMPVAR / $TRUNC )"`
+fi
+
+# C+I
+echo 'NNOEXTZX='$NNOEXTZX
+echo 'NNOEXTZY='$NNOEXTZY
+if [ $NNOEXTZX -ne 0 ]; then
+  NDLUXG=`expr $LNLON - $NNOEXTZX`
+else
+  NDLUXG=`expr $LNLON - $EZONE`
+fi
+if [ $NNOEXTZY -ne 0 ]; then
+  NDGUXG=`expr $LNLAT - $NNOEXTZY`
+else
+  NDGUXG=`expr $LNLAT - $EZONE`
+fi
+
+# Check rotated Mercator LLMRT flag
+LLMRT=${LLMRT-.FALSE.}
+###############################################
+
+
+
+######################################
+# Set LCLIMDIR and E923_DATA_PATH
+######################################
+
+[ -s $LCLIMDIR ] || $MKDIR $LCLIMDIR || exit
+
+CLARCH=$HM_EXP/$( echo $LCLIMDIR |  perl -pe "s/(.*)\/($EXP)\/(.*)/\$3/" )
+
+##########################################
+# Check if the climate file(s) exist     #
+# We need past, present and future month #
+##########################################
+
+M1=`mandtg -month $DTG`
+
+# Previous and next months are calculated with Perl; Perl interprets 08 as
+# an attempt to input an octal number, hence I add 100 to M1
+M2=`perl -e "printf('%2.2i',1$M1 == 101 ? 12: 1$M1-101)"`	# previous month
+M3=`perl -e "printf('%2.2i',1$M1 == 112 ? 1 : 1$M1- 99)"`	# next month
+ 
+MONTHS=""
+
+[ -s $LCLIMDIR/m$M1 ] || MONTHS=${MONTHS}" "${M1}
+[ -s $LCLIMDIR/m$M2 ] || MONTHS=${MONTHS}" "${M2}
+[ -s $LCLIMDIR/m$M3 ] || MONTHS=${MONTHS}" "${M3}
+
+echo $MONTHS
+
+#############################################################
+
+function convert2fa {
+
+  # Generate Const.Clim.sfx
+
+  MM_MAIN=`mandtg -month $DTG`
+  ln -sf $LCLIMDIR/m$MM_MAIN      .
+  ln -sf $LCLIMDIR/PGD.lfi        .
+  [ -f Const.Clim.sfx ] && rm Const.Clim.sfx
+  conv sfxlfi2fa Const.Clim.sfx PGD.lfi m$MM_MAIN || rm Const.Clim.sfx
+  if [ -f Const.Clim.sfx ]; then
+    mv Const.Clim.sfx $LCLIMDIR/.
+  else
+    echo "Something went wrong when converting PGD.lfi to Const.Clim.sfx"
+    exit
+  fi
+
+  # Archive climate data
+  if [ "$HM_EXP" ] ; then
+    Access_lpfs -mkdir $CLARCH
+    Access_lpfs -to $LCLIMDIR/Const.Clim.sfx $CLARCH/Const.Clim.sfx || exit
+  fi
+}
+
+#############################################################
+
+function fix_pgd_oro {
+
+ #
+ # Ensure consistency in orography between the atmosphere and surfex
+ # Read gridpoint orography from the atmospheric file
+ # and insert it in the PGD.lfi file.
+ # Modify lakes to sea if requested (MODIFY_LAKES=T|F)
+ #
+
+ [ -s Const.Clim.$MM ] || ln -sf $LCLIMDIR/m$MM Const.Clim.$MM
+ ln -sf $LCLIMDIR/PGD_prel.lfi .
+
+cat > namgl << EOF
+&naminterp
+ INPUT_FORMAT='FA'
+ OUTPUT_FORMAT='memory',
+ INFILE='Const.Clim.${MM}'
+ READKEY(1:1)%FANAME='SURFGEOPOTENTIEL',
+ ISTOP=-$EZONE,
+ JSTOP=-$EZONE,
+/
+&naminterp
+ OUTPUT_FORMAT='FIXZS',
+ MODIFY_LAKES=$MODIFY_LAKES,
+ INPUT_FORMAT='lfi'
+ INFILE='PGD_prel.lfi'
+/
+&naminterp
+ INPUT_FORMAT='memory'
+ OUTPUT_FORMAT='lfi',
+ OUTFILE='PGD'
+/
+EOF
+
+ # Vänern/Vättern polygon
+ ln -sf $HM_LIB/const/vanern.dat  .
+ ln -sf $HM_LIB/const/vattern.dat .
+
+ $MPPGL $BINDIR/gl_grib_api -n namgl || exit 1
+
+ mv PGD.lfi $LCLIMDIR/PGD.lfi
+
+ # Recreate  Const.Clim.sfx to be used in the forecast model
+ if [ $SURFEX_OUTPUT_FORMAT == "fa" ] ; then
+   rm -f  $LCLIMDIR/Const.Clim.sfx
+   convert2fa
+ fi
+}
+
+
+######################################
+# No climate file found, check LCLIMDIR and E923_DATA_PATH
+######################################
+
+#
+# Check if data are in archive (ECFS)
+#
+
+NM=$MONTHS 
+MONTHS=""
+for MM in $NM ; do
+  Access_lpfs -from $CLARCH/m$MM $LCLIMDIR || MONTHS=${MONTHS}" "${MM}
+done
+
+if [ "$MONTHS" = "" ] ; then
+  if [ "$SURFACE" == "surfex" ]; then
+    [ -f $LCLIMDIR/PGD.lfi ]  || fix_pgd_oro
+    if [ $SURFEX_OUTPUT_FORMAT == "fa" ] ; then
+     [ -f $LCLIMDIR/Const.Clim.sfx ] || convert2fa
+    fi
+  fi
+  echo "Climate file(s) found... exit Climate"
+ 
+  # Check that the climate file is correct
+cat > fort.10 << EOF
+$LNLON $LNLAT
+$LONC $LATC
+$LON0 $LAT0
+$LNMSMAX $LNSMAX
+$EZONE $EZONE
+$GSIZE $GSIZE
+EOF
+
+  $MPPGL $BINDIR/domain_prop_grib_api -DOMAIN_CHECK $LCLIMDIR/m$M1 -f || \
+  { echo "Domain definition differs between config and exististing climate files" ; exit 1 ; }
+
+  rm -f fort.10
+
+  cd ..
+  rm -fr $WDIR
+  trap - 0
+  exit
+fi
+
+echo E923_DATA_PATH=$E923_DATA_PATH
+[ -s $E923_DATA_PATH ] || { echo "Could not find climate database directory" ; exit 1 ; }
+
+
+###############################################
+
+# Handle reading of external PGD_prel.fa file
+if [ "$SURFACE" == "surfex" ]; then
+   LNORO=.TRUE.
+   LNLSM=.TRUE.
+   LIPGD=.TRUE.
+   if [ ! "$LLMRT" == ".FALSE." ] ; then
+      echo "Does LLMRT really work with SURFEX?"
+      exit 1
+   fi
+else
+   LNORO=.FALSE.
+   LNLSM=.FALSE.
+   LIPGD=.FALSE.
+fi
+
+
+#      ***************
+#      *  NAMELISTS  *
+#      ***************
+cat << EOF > nam923_smoothing_description
+ &NAMCLA
+   FACZ0=0.53,
+   FENVN=0.,
+   LKEYF=.TRUE.,
+   LNEWORO=.FALSE.,
+   LNEWORO2=.FALSE.,
+   LSPSMORO=$LSPSMORO,
+   LNORO=$LNORO,
+   LNLSM=$LNLSM,
+   LIPGD=$LIPGD,
+   NLISSP=0,
+ /
+ &NAMDIM
+   NDGLG=$LNLAT,
+   NDGUXG=$NDGUXG,
+   NSMAX=$LNSMAX,
+   NDLON=$LNLON,
+   NDLUXG=$NDLUXG,
+   NFLEVG=1,
+   NMSMAX=$LNMSMAX,
+ /
+ &NAMGEM
+   NHTYP=0,
+   NSTTYP=1,
+   RMUCEN=1.,
+   RLOCEN=0.,
+   RSTRET=1.,
+ /
+ &NEMGEO
+   ELON0=$LON0,
+   ELAT0=$LAT0,
+   ELONC=$LONC,
+   ELATC=$LATC,
+   EDELX=$GSIZE,
+   EDELY=$GSIZE,
+   LMRT=$LLMRT,
+ /
+EOF
+
+
+cat << EOF > nam923_description
+ &NAMCLA
+   FACZ0=0.53,
+   FENVN=0.,
+   LKEYF=.TRUE.,
+   LNEWORO=.TRUE.,
+   LNEWORO2=.FALSE.,
+   LNORO=.TRUE.,
+   LNLSM=$LNLSM,
+   NLISSP=1,
+ /
+ &NAMDIM
+   NDGLG=$LNLAT,
+   NDGUXG=$NDGUXG,
+   NSMAX=$LNSMAX,
+   NDLON=$LNLON,
+   NDLUXG=$NDLUXG,
+   NFLEVG=1,
+   NMSMAX=$LNMSMAX,
+ /
+ &NAMGEM
+   NHTYP=0,
+   NSTTYP=1,
+   RMUCEN=1.,
+   RLOCEN=0.,
+   RSTRET=1.,
+ /
+ &NEMGEO
+   ELON0=$LON0,
+   ELAT0=$LAT0,
+   ELONC=$LONC,
+   ELATC=$LATC,
+   EDELX=$GSIZE,
+   EDELY=$GSIZE,
+   LMRT=$LLMRT,
+ /
+EOF
+
+
+cat << EOF > grid6
+ &NAMCLI
+   NDATX=360,
+   NDATY=180,
+   RSTR=0.,
+ /
+EOF
+
+# Copy and manipulate the fixed namelist
+NAMELIST=$WRK/$WDIR/namelist_climate
+Get_namelist climate $NAMELIST
+sed -e "s/NBPROC/${NPROC}/g"  \
+    -e "s/NPROCX/${NPROCX}/g" \
+    -e "s/NPROCY/${NPROCY}/g" \
+    $NAMELIST > nam923_fixe
+
+# Create all the needed namelists
+
+sed "s/ N923=0/ N923=1/" nam923_fixe > nam1
+cat nam923_smoothing_description nam1 > nam923_1_smoothing
+
+sed "s/ N923=0/ N923=1/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_1
+
+sed "s/ N923=0/ N923=2/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_2
+
+sed "s/ N923=0/ N923=3/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_3
+
+sed "s/ N923=0/ N923=4/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_4
+
+sed "s/ N923=0/ N923=5/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_5
+
+sed "s/ N923=0/ N923=6/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_6
+NB=`eval grep -n NAMCLI nam923_6 |cut -f1 -d':'`
+sed ${NB}d nam923_6 > nam923_6_2
+cat nam923_6_2 grid6 > nam923_6
+
+sed "s/ N923=0/ N923=8/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_8
+
+sed "s/ N923=0/ N923=9/" nam923_fixe > nam1
+cat nam923_description nam1 > nam923_9
+
+rm -f nam1
+
+#      *****************************
+#      * PATHS TO CLIMATE DATABASE * 
+#      *****************************
+
+cdb1=$E923_DATA_PATH/GTOPT030
+cdb2=$E923_DATA_PATH/SURFACE_G
+cdb3=$E923_DATA_PATH/N108
+cdb5=$E923_DATA_PATH/SURFACE_L
+cdb6=$E923_DATA_PATH/CLIM_G/v2
+cdb8=$E923_DATA_PATH/abc_O3
+cdb9=$E923_DATA_PATH/aero_tegen
+
+#      ****************
+#      *  EXECUTABLE  *
+#      ****************
+
+
+#      **************
+#      *  PART 0    *
+#      **************
+#
+# Filtered orography by quadratic grid with higher truncation.
+
+
+ln -sf ${cdb1}/Water_Percentage       Water_Percentage
+ln -sf ${cdb1}/Oro_Mean               Oro_Mean
+ln -sf ${cdb1}/Sigma                  Sigma
+ln -sf ${cdb1}/Nb_Peaks               Nb_Peaks
+ln -sf ${cdb1}/Urbanisation           Urbanisation
+ln -sf ${cdb1}/Dh_over_Dx_Dh_over_Dy  Dh_over_Dx_Dh_over_Dy
+ln -sf ${cdb1}/Dh_over_Dx_square      Dh_over_Dx_square
+ln -sf ${cdb1}/Dh_over_Dy_square      Dh_over_Dy_square
+ln -sf ${cdb1}/Hmax-HxH-Hmin_ov4      Hmax-HxH-Hmin_ov4
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+cp nam923_1_smoothing fort.4
+Cat_logs fort.4
+
+if [ $SURFACE == "surfex" ] ; then
+   [[ -s  $LCLIMDIR/PGD_prel.fa ]] || \
+   { echo "Could not find input  $LCLIMDIR/PGD_prel.fa file " ; exit 1 ; }
+   ln -s $LCLIMDIR/PGD_prel.fa Neworog
+fi
+
+echo "Executing PART 0"
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+# Rename the file containing filtered orography.
+# The name of the file is expected to be Neworog!
+
+mv Const.Clim Neworog
+
+#      **************
+#      * PART 1     *
+#      * Orography  *
+#      **************
+
+cp nam923_1 fort.4
+Cat_logs fort.4
+
+echo "Executing PART 1"
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+rm -f fort.4
+rm -f Water_Percentage Oro_Mean Sigma Nb_Peaks  Urbanisation  Dh_* Hmax-HxH-Hmin_ov4    
+ls -l
+
+
+#      *********************************************************
+#      * PART 2                                                *
+#      * Surface soil and vegetation, without annual variation *
+#      *********************************************************
+
+
+ln -sf ${cdb2}/itp_GL   itp_GL
+ln -sf ${cdb2}/alb_GL   alb_GL
+ln -sf ${cdb2}/emi_GL   emi_GL
+ln -sf ${cdb2}/dps_GL   dps_GL
+ln -sf ${cdb2}/arg_GL   arg_GL
+ln -sf ${cdb2}/sab_GL   sab_GL
+ln -sf ${cdb2}/vgx_GL   vgx_GL
+ln -sf ${cdb2}/dpr_GL   dpr_GL
+
+cp nam923_2 fort.4
+Cat_logs fort.4
+
+echo "Executing PART 2"
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+rm -f fort.4 *_GL
+ls -l
+
+
+#      ************************************************
+#      * PART 3                                       *
+#      * Monthly climatological values, land-sea mask *
+#      ************************************************
+
+
+ln -sf ${cdb3}/N108_GL  N108_GL
+
+cp nam923_3 fort.4
+Cat_logs fort.4
+
+echo "Executing PART 3"
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+rm -f fort.4 N108_GL
+ls -l
+
+#      ************************************************************
+#      *  PARTS 4 , 5 , 6 , 8 , 9 (contains month specific data)  *
+#      ************************************************************
+
+ln -sf ${cdb2}/z0v_GL  z0v_GL
+ln -sf ${cdb2}/alv_GL  alv_GL
+ln -sf ${cdb2}/rsm_GL  rsm_GL
+
+
+ln -sf ${cdb5}/msk_HR     msk_HR
+ln -sf ${cdb5}/itp_HR     itp_HR
+ln -sf ${cdb5}/dpr_HR     dpr_HR
+ln -sf ${cdb5}/rsm_HR     rsm_HR
+ln -sf ${cdb5}/vgx_HR     vgx_HR
+ln -sf ${cdb5}/alv_HR     alv_HR
+ln -sf ${cdb5}/z0v_HR     z0v_HR
+
+cp     ${cdb6}/rel_GL.Z        rel_GL.Z
+gunzip rel_GL.Z
+
+for MM in $MONTHS
+do
+
+  mv Const.Clim.${MM} Const.Clim
+
+  ln -sf ${cdb2}/veg${MM}_GL  veg_GL
+  ln -sf ${cdb2}/lai${MM}_GL  lai_GL
+
+  cp nam923_4 fort.4
+  Cat_logs fort.4
+
+  echo "Executing PART 4, month $MM"
+  $MPPEXEC $BINDIR/$MODEL || exit
+
+  Cat_logs NODE.001_01
+
+  rm -f fort.4 veg_GL lai_GL
+  ls -l
+
+  ln -sf ${cdb5}/veg_${MM}_HR    veg_HR
+  ln -sf ${cdb5}/lai_${MM}_HR    lai_HR
+
+  cp nam923_5 fort.4
+  Cat_logs fort.4
+
+  echo "Executing PART 5, month $MM"
+  $MPPEXEC $BINDIR/$MODEL || exit
+
+  Cat_logs NODE.001_01
+
+  rm -f fort.4 veg_HR lai_HR
+  ls -l
+
+  cp ${cdb6}/tpl_${MM}_GL.Z  tsl_GL.Z
+  cp ${cdb6}/tpl_${MM}_GL.Z  tpl_GL.Z
+  cp ${cdb6}/wpl_${MM}_GL.Z  wsl_GL.Z
+  cp ${cdb6}/wpl_${MM}_GL.Z  wpl_GL.Z
+  cp ${cdb6}/snl_${MM}_GL.Z  snl_GL.Z
+  gunzip tsl_GL
+  gunzip tpl_GL
+  gunzip wsl_GL
+  gunzip wpl_GL
+  gunzip snl_GL
+
+  cp nam923_6 fort.4
+  Cat_logs fort.4
+
+  echo "Executing PART 6, month $MM"
+  $MPPEXEC $BINDIR/$MODEL || exit
+
+  Cat_logs NODE.001_01
+
+  rm -f fort.4 tsl_* tpl_* wsl_* wpl_* snl_*
+  ls -l
+
+
+  ln -sf ${cdb8}/abc_quadra_${MM} abc_coef
+
+  cp nam923_8 fort.4
+  Cat_logs fort.4
+
+  echo "Executing PART 8, month $MM"
+  $MPPEXEC $BINDIR/$MODEL || exit
+
+  Cat_logs NODE.001_01
+
+  echo "  OZONE OK "
+
+  rm -f fort.4 abc_coef
+
+  ln -sf ${cdb9}/aero.tegen.m${MM}_GL aero_GL
+
+  cp nam923_9 fort.4
+  Cat_logs fort.4
+
+  echo "Executing PART 9, month $MM"
+  $MPPEXEC $BINDIR/$MODEL || exit
+
+  Cat_logs NODE.001_01
+                                                                                                    
+  echo "  aerosols OK "
+                                                                                                    
+  rm -f fort.4 aero_GL
+  ls -l
+
+  mv Const.Clim Const.Clim.${MM}
+  cp Const.Clim.${MM} $LCLIMDIR/m${MM}
+
+done
+
+
+if [ $SURFACE == "surfex" -a ! -s $LCLIMDIR/PGD.lfi ] ; then
+  fix_pgd_oro || exit
+fi
+
+# Archive climate data
+if [ "$HM_EXP" ] ; then
+  Access_lpfs -mkdir $CLARCH
+  for MM in $MONTHS ;do
+    Access_lpfs -to $LCLIMDIR/m$MM $CLARCH/m$MM || exit
+  done
+  if [ $SURFACE == "surfex" ] ; then
+    Access_lpfs -to $LCLIMDIR/PGD.lfi $CLARCH/PGD.lfi || exit
+  fi
+fi
+
+cd ..
+rm -fr $WDIR
+trap - 0

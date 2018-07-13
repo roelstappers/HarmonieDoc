@@ -1,0 +1,268 @@
+#!/bin/bash
+
+#
+# Archiving strategy for ECFS
+# Large files like model state files are archived separately
+# Smaller files, like odb and some log files are gathered together in a tar file
+# vfld/vobs files are gathered by month
+#
+# The script should be called with one argument 
+# main : Archive the main model (FA/LFI) files
+# converted : Archive files converted to netcdf/grib
+# postp : Postprocessing output
+#
+
+. header.sh
+. include.ass
+
+#[ "$SMSTRYNO" -gt 1 ] && sleep `expr $SMSTRYNO \* 150`
+
+if [ $# -lt 1 ] ; then
+ echo "Usage: Archive_host1 [main|converted|postp]"
+ exit 1 
+fi
+
+THIS_ARCH=$1
+
+
+LIST_OF_FILES=""
+
+# Create the directory for this hour
+EARK=${ECFSLOC}:${HM_EXP}/$YY/$MM/$DD/$HH
+[ ${ENSMBR--1} -ge 0 ] && EARK=$EARK/mbr$ENSMBR
+Access_lpfs -mkdir $EARK
+
+cd $ARCHIVE
+
+is_coldstart=$( cat $WRK/is_coldstart )
+
+if [ $THIS_ARCH == "main" ] ; then
+
+ # Archive surface analysis
+ if [ $ANASURF != none -a $is_coldstart != "yes" ] ; then
+   F=ICMSHANAL+0000
+   Access_lpfs -to $F $EARK/$F
+   if [ $ANAATMO = 4DVAR -a $ANASURF_MODE = both ] ; then
+     F=ICMSHANAL+0000_2
+     Access_lpfs -to $F $EARK/$F
+   fi
+
+   if [ $SURFACE == "surfex" ] ; then
+     if [ $SURFEX_OUTPUT_FORMAT = fa ] ; then
+       F=ICMSHANAL+0000.sfx
+     else
+       F=PREP.lfi
+     fi
+     Access_lpfs -to $F $EARK/$F
+     F=ICMSHANAL+0000.sfx_before_PertSFC
+     [[ -s $F ]] && Access_lpfs -to $F $EARK/$F
+   fi
+ fi 
+
+
+ if [ $ANAATMO = 3DVAR ] ; then
+
+   # Archive 3DVAR analysis 
+
+   [ $is_coldstart != "yes" ] && {
+
+      if [ "${ARSTRATEGY-medium}" != minimum ]; then
+         for F in MXMIN1999+0000 ANAB1999+0000 ; do
+            Access_lpfs -to $F $EARK/$F
+         done
+      fi
+
+      if [ $LVARBC = "T" ]; then
+         LIST_OF_FILES="$LIST_OF_FILES VARBC.cycle"
+      fi
+
+   }
+
+ fi 
+
+
+ if [ $ANAATMO = 4DVAR ] ; then
+
+   # Archive 4DVAR analysis
+
+   [ $is_coldstart != "yes" ] && {
+
+      for F in an_begwin an ; do
+         Access_lpfs -to $F $EARK/$F
+      done
+
+      if [ $LVARBC = "T" ]; then
+         LIST_OF_FILES="$LIST_OF_FILES VARBC.cycle"
+      fi
+
+   }
+
+ fi
+
+
+ if [ $ANASURF != none -o $ANAATMO = 3DVAR -o $ANAATMO = 4DVAR ] ; then
+
+   # Archive observations and feedback data
+   [ $is_coldstart != "yes" ] && {
+       for F in $( ls -1 | grep odb | grep -v stuff ) ; do
+          LIST_OF_FILES="$LIST_OF_FILES bdstrategy $F"
+       done
+   }
+
+ fi
+
+
+ # Archive forecasts
+ if [ "${ARSTRATEGY-medium}" != minimum ]; then
+ 
+   FCFILES=`ls ICMSH${CNMEXP}*+* 1>/dev/null 2>/dev/null && ls -1 ICMSH${CNMEXP}*+*`
+   if [ $CONVERTFA = "no" -o "${ARSTRATEGY-medium}" = maximum ] ; then
+     PFFILES=`ls PF${CNMEXP}*+* 1>/dev/null 2>/dev/null && ls -1 PF${CNMEXP}*+*` || true
+   fi
+   SFXFILES=`ls AROMOUT_.* 1>/dev/null 2>/dev/null && ls -1 AROMOUT_.*` || true
+   SFXFILESF=`ls ICMSHFULL+*.sfx 1>/dev/null 2>/dev/null && ls -1 ICMSHFULL+*.sfx`
+   FCFILES="$FCFILES $PFFILES $SFXFILES $SFXFILESF"
+
+ else
+   # Archive only what's required as a first guess
+   FFFF=`perl -e "printf('%4.4i', '${FCINT}')"`
+   if [ $SURFACE = "surfex" -a $SURFEX_OUTPUT_FORMAT = "lfi" ] ; then
+      FCFILES=`ls -1 ICMSH${CNMEXP}+$FFFF AROMOUT_."$FFFF".lfi`
+   else
+      FCFILES=`ls -1 ICMSH${CNMEXP}+${FFFF}*`
+      SFXFILESF=`ls ICMSHFULL+*.sfx 1>/dev/null 2>/dev/null && ls -1 ICMSHFULL+*.sfx`
+      FCFILES="$FCFILES $SFXFILESF"
+   fi 
+ fi
+
+ for F in $FCFILES ; do
+   Access_lpfs -to $F $EARK/$F
+ done
+
+ # Add bdstrategy
+ LIST_OF_FILES="$LIST_OF_FILES bdstrategy"
+
+ # Create a tar file with files in LIST_OF_FILES
+ tar cvf odb_stuff.tar $LIST_OF_FILES
+ Access_lpfs -to odb_stuff.tar $EARK/odb_stuff.tar
+
+elif [ $THIS_ARCH == "converted" ] ; then
+
+ # Archive whatever grib files found in the archive directory
+ if [ "${ARSTRATEGY-medium}" = maximum ]; then
+   for F in $( find . -name "*grib*" ) ; do
+     Access_lpfs -to $F $EARK/$F
+   done
+
+  # Archive whatever netcdf files found in the archive directory
+  if [ "${ARSTRATEGY-medium}" != minimum ]; then
+    for F in $( find . -name "*.nc*" ) ; do
+      Access_lpfs -to $F $EARK/$F
+    done
+  fi
+
+  # Archive DDH files found in the archive directory
+  if [ "${ARSTRATEGY-medium}" = maximum ]; then
+   F=DDH_$DTG.tar
+   tar cvf $F DHFD* 2> /dev/null && {
+    Access_lpfs -to $F $EARK/$F
+   } || echo "No DDH files to archive"
+
+  fi
+
+ elif [ "${ARSTRATEGY-medium}" = medium -a ${ENSMBR--1} -ge 0 ]; then
+   # For an EPS run we archive the grib files but not the FA files
+   for F in $( find . -name "*grib*" ) ; do
+     Access_lpfs -to $F $EARK/$F
+   done
+ fi
+
+elif [ $THIS_ARCH == "postp" ] ; then
+
+ # Archive field verification files
+ tar cvf fldver.tar acc_* fld_* 2> /dev/null && {
+   Access_lpfs -to fldver.tar $EARK/fldver.tar
+ } || echo "No field verification files to archive"
+
+
+ #
+ # Archive verification files on $PERM and gather them in larger 
+ # chunks before moving them to ECFS
+ #
+
+ PARCH=$PARCH/archive/extract
+ $MKDIR $PARCH || exit 
+
+ if [ -s $EXTRARCH/vfld${VFLDEXP}${DTG}.tar.gz ] ; then
+   cp $EXTRARCH/vfld${VFLDEXP}${DTG}.tar.gz $PARCH/.
+ fi
+
+ cd $EXTRARCH || exit 
+
+ CDTG=`echo $DTG | awk '{print substr($1,1,8)}'`00
+ LDTG=`mandtg $DTG + $LL`  # SDTG of last observation
+
+ if [ ${ENSMBR} -lt 0 -o ${ENSMBR} -eq ${ENSCTL} ] ; then
+  while [ $CDTG -le $LDTG ]
+  do
+   DATE=`mandtg -date $CDTG`
+   if [ -s $EXTRARCH/vobs${DATE}.tar.gz ] ; then
+    if [ -s $PARCH/vobs${DATE}.tar.gz ] ; then
+      mkdir tmp$$
+      cd tmp$$
+      tar -zxvf $PARCH/vobs${DATE}.tar.gz
+      tar -zxvf $EXTRARCH/vobs${DATE}.tar.gz
+      tar -zcvf $EXTRARCH/vobs${DATE}.tar.gz vobs${DATE}??
+      cd -
+      rm -rf tmp$$
+    fi
+    cp $EXTRARCH/vobs${DATE}.tar.gz $PARCH/.
+   fi
+   CDTG=`mandtg $CDTG + 24`
+  done
+ fi
+
+ #
+ # Archive vfld/vobs on ECFS if we are at the end of the month
+ # or at the end of the experiment
+ #
+
+   MM=$( mandtg -month $DTG )
+ NDTG=$( mandtg $DTG + $FCINT )
+   NM=$( mandtg -month $NDTG )
+
+ if [ $NM -ne $MM -o $DTG -eq $DTGEND ] ; then
+
+   cd $PARCH
+
+   YY=$( mandtg -year $DTG )
+   
+   if [ $FLDEXTR = yes ] ; then
+     FILE=vfld${VFLDEXP}${YY}${MM}
+     tar cvf $FILE.tar ${FILE}*
+     Access_lpfs -mkdir ${ECFSLOC}:${HM_EXP}/vfld
+     Access_lpfs -to $PARCH/$FILE.tar ${ECFSLOC}:${HM_EXP}/vfld/$FILE.tar
+     rm -f $FILE.tar
+     [[ 10#$NM -ne 10#$MM ]] && rm -f ${FILE}*
+   fi
+
+   if [ $OBSEXTR = bufr ] ; then
+    if [ ${ENSMBR} -lt 0 -o ${ENSMBR} -eq ${ENSCTL} ] ; then
+     FILE=vobs${YY}${MM}
+     tar cvf $FILE.tar ${FILE}*
+     Access_lpfs -mkdir ${ECFSLOC}:${HM_EXP}/vobs
+     Access_lpfs -to $PARCH/$FILE.tar ${ECFSLOC}:${HM_EXP}/vobs/$FILE.tar
+     rm -f $FILE.tar
+     [[ 10#$NM -ne 10#$MM ]] && rm -f ${FILE}*
+    fi
+   fi
+
+ fi
+
+else
+  echo $THIS_ARCH unkwon
+  exit 1
+fi
+
+trap 0 
+exit

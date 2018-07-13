@@ -1,0 +1,72 @@
+#!/bin/bash
+
+#
+# Create single obs file by perturbing FG with 1K in central point
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+# Output directory
+OUTDIR=$1
+[[ -s $OUTDIR ]] || $MKDIR $OUTDIR
+
+
+# First guess to work with
+FG=$WRK/first_guess
+
+# Get the domain centre point
+LAT=$( $BINDIR/domain_prop_grib_api -4JB $FG -f | grep ELATC | cut -d"=" -f2  | sed 's/ //g' )
+LON=$( $BINDIR/domain_prop_grib_api -4JB $FG -f | grep ELONC | cut -d"=" -f2  | sed 's/ //g' )
+
+# Extract temperature at 500hPa in the centre of the domain
+cat > namgpt << EOF
+ &NAMINTERP
+ outgeo%nlon       =   1 ,
+ outgeo%nlat       =   1,
+ outgeo%nlev       =  -1,
+ outgeo%gridtype   =  'regular_ll'
+ outgeo%arakawa    =  'A',
+ order             =   0,
+ pppkey(1:1)%shortname = 't'
+ pppkey(1:1)%level     = 500,
+ pppkey(1:1)%levtype   = 'isobaricInhPa',
+ pppkey(1:1)%nnn  = 000,
+ linterp_field     = F,
+ gplat          = $LAT,
+ gplon          = $LON,
+ lwrite_pponly=T,
+/
+EOF
+
+$BINDIR/gl_grib_api -f $FG -n namgpt -s || exit
+
+# Extract and perturb the value
+OBINC=1.0
+OBVAL=$( cat gp* | tail -1 |  sed 's/ //g' )
+OBVAL=$( perl -e "\$test=$OBVAL + $OBINC ; print \$test" |  sed 's/ //g')
+
+# Extract the proper date
+DATE=$( mandtg -date $DTG )
+  HH=$( mandtg -hour $DTG )
+
+# Create a new OBSOUL file and replace the existing one
+cat > OBSOUL << EOF
+ $DATE $HH
+ 17 5 10003035   $LAT  $LON  '01384   '  
+ $DATE ${HH}0000 207.84500000 1 11111 0 
+ 2 50000.00000 0.1699999976E+39 $OBVAL 2560
+EOF
+
+mv OBSOUL $OUTDIR/.
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

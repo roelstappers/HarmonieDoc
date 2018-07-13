@@ -1,0 +1,27 @@
+#!/bin/bash -x
+
+
+#
+# Configuration for Makeup build of executables/libraries
+#
+#
+
+. header.sh
+
+ROOTDIR=$HM_LIB export ROOTDIR
+MAKEUP_BUILD_DIR=${MAKEUP_BUILD_DIR-$ROOTDIR/$HARMONIE_CONFIG}
+
+
+#
+# Configure and make the executables
+#
+cd $MAKEUP_BUILD_DIR/src || exit
+if [ -f $HM_DATA/.makeup_changes -o -f .makeup_not_complete ]; then
+  ../util/makeup/configure -c $MAKEUP_BUILD_GRIB_API_FLAG -d config.$HARMONIE_CONFIG $SUBSHELL || exit 1 
+else
+  echo "Configuration is skipped since there are no source code updates and previous make succeeded."
+fi
+
+# Normal exit
+trap - 0
+exit

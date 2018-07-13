@@ -1,0 +1,457 @@
+#!/bin/bash
+#
+# Extract first guess for upper air and SURFEX depending on
+# SIMULATION_TYPE (nwp|climate) 
+# ANAATMO (3DVAR|4DVAR|blending)
+# ANASURF (none)
+# DTG relative DTGBEG
+#
+# FG  : FA     first guess
+# FGS : SURFEX first guess
+#
+# The very first guess can be defined by the user through FIRST_FG/FIRST_FGS
+#
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+function Find_FG {
+    # $1 : DTG
+    # $2 : LL (forecast length)
+    # $3 : type ( "md" or "sfx" )
+    # $4 : aroot ( optional, def=$ARCHIVE_ROOT )
+    # $5 : ENSMBR (optional)
+    local fgdtg=${1?"Usage: Find_FG DTG LL [type aroot ENSMBR])"}
+    local ll=${2?"Usage: Find_FG DTG LL [type aroot ENSMBR])"}
+    local type=${3-md}
+    local aroot=${4-$ARCHIVE_ROOT}
+    local ensmbr=${5-$ENSMBR}
+    FGYY=${fgdtg:0:4}
+    FGMM=${fgdtg:4:2}
+    FGDD=${fgdtg:6:2}
+    FGHH=${fgdtg:8:2}
+    local adir=$( ArchDir $ARCHIVE_ROOT $FGYY $FGMM $FGDD $FGHH $ensmbr )
+    [ "$TFLAG" = "min" ] && ll=$(( ll*3600 / TSTEP ))
+    
+    local llll=$( perl -e "printf '%04d',$ll" )
+    local file=$adir/ICMSH${CNMEXP}+$llll
+    if [ $type = "sfx" ]; then
+	if [ "$SURFEX_OUTPUT_FORMAT" = "lfi" ] ; then
+            file=$adir/AROMOUT_.${llll}.lfi
+	elif [ "$SURFEX_LSELECT" = "yes" ] ; then
+	    file=$adir/ICMSHFULL+$llll.sfx
+	else
+	    file=$adir/ICMSH${CNMEXP}+$llll.sfx
+	fi
+    fi
+    if [ "$aroot" = "$HM_EXP" ]; then
+        # Copy from ECFS
+	local adir_ecfs=$( ArchDir $aroot $FGYY $FGMM $FGDD $FGHH $ensmbr )
+	local FGB=$( basename $file )
+	local FGD=$( dirname $file )
+	[[ -s $FGD ]] || { 
+            $MKDIR $FGD || { echo "Could not create directory for first guess $FGD" ; }  #exit 1 removed
+	}
+	Access_lpfs -from $adir_ecfs/$FGB $file
+    fi
+    if [ -s $file ]; then
+	found_FG=$file
+	return 1
+    else
+	not_found_FG=$file
+	return 0
+    fi
+}
+
+function Update_is_coldstart() {
+    echo ${1-"yes"} > $WRK/is_coldstart
+    snode=${SMSNODE:-${ECF_NODE:-'localhost'}}
+    if [ "$HOSTNAME" != "$snode" ]; then
+	${RCP-rcp} $WRK/is_coldstart $snode:$HM_DATA0/$CYCLEDIR
+    fi
+}
+
+# Check first guess
+is_coldstart=$( cat $WRK/is_coldstart )
+
+FIRST_FG=${FIRST_FG:-none}
+FIRST_FGS=${FIRST_FGS:-none}
+
+if [ $SIMULATION_TYPE = nwp ] && [ $ANAATMO = 3DVAR -o $ANAATMO = 4DVAR -o $ANASURF != none  ]; then
+
+   FGDTG=$( mandtg $DTG + -$FCINT )
+
+   if [ $ANAATMO = 4DVAR ] ; then
+      LLL=$(( FCINT - 1 ))
+      Find_FG $FGDTG $LLL "md"
+      if [ $? -eq 1 ]; then
+	  FG=$found_FG
+	  FGDFI=$found_FG
+      else
+          FG=$not_found_FG
+          FGDFI=$not_found_FG
+      fi
+   else
+      ntries=1
+      [ "$RUNNING_MODE" = "operational" ] && ntries=$((24/FCINT))
+      ll=$FCINT
+      ntry=1
+      fg_found=0
+      while [ $ntry -le $ntries -a $fg_found -eq 0 ]; do
+	  fgdtg=$( mandtg $DTG + -$ll )
+	  Find_FG $fgdtg $ll "md"
+	  fg_found=$?
+	  if [ $fg_found -eq 0 ]; then
+	      ntry=$(( ntry + 1 ))
+	      ll=$(( ll + FCINT ))
+	      FG=$not_found_FG
+	  else
+	      FG=$found_FG
+	      FGDFI=$FG
+	  fi
+      done
+   fi
+
+   if [ "$FIRST_FG" != none -a $DTG -eq $DTGBEG ] ; then
+      # Redefine FG if given by user
+      [[ -s $FIRST_FG ]] || { echo "Could not find first FG $FIRST_FG" ; exit 1 ; }
+      FG=$FIRST_FG
+      FGDFI=$FG
+      fg_found=1
+   fi
+
+   # Check the upper air FG
+   if [ -s "$FG" ] ; then
+
+      ln -sf $FG  $WRK/first_guess
+
+   elif [ $is_coldstart != "yes" ] ; then
+
+     # Search in ECFS
+     Find_FG $FGDTG $FCINT "md" $HM_EXP
+     if [ $? -eq 1 ]; then
+	 FG=$found_FG
+     elif [ ${ENSMBR--1} -ge 0 -a "$ENSMBR" != "$ENSCTL" ]; then
+	 ## Must use the FCINT of ENSCTL here
+	 fcint=$( perl -S Ens_util.pl -v FCINT -m $ENSCTL ENVVAR )
+	 fgdtg=$( mandtg $DTG + -$fcint )
+	 Find_FG $FGDTG $FCINT "md" $ARCHIVE_ROOT $ENSCTL
+	 if [ $? -eq 1 ]; then
+	     FG=$found_FG
+	     ## TODO: warn in either coldstarts or severe_warnings
+	 else
+	     is_coldstart=yes
+	 fi
+     else
+	 is_coldstart=yes
+     fi
+     if [ -s "$FG" ]; then
+	 ln -sf $FG  $WRK/first_guess
+     fi
+   fi
+
+   if [ $is_coldstart = "yes" ] ; then
+
+      if [ "$RUNNING_MODE" = "research" -a $DTG -gt $DTGBEG ]; then
+	  echo "Could not find first guess '$not_found_FG', abort!"
+	  exit 1
+      fi
+      # Use first boundary file
+      FG=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+      [[ -s $FG ]] || { echo "Could not find '$FG'" ; exit 1 ; }
+      ln -sf $FG $WRK/first_guess
+      Update_is_coldstart $is_coldstart
+
+   fi
+
+   echo "Use '$FG' as first guess file"
+
+   # Point to the very first guess and forecast start
+   # If we run 4DVAR and CANARI_* no assimilation during the first cycle 
+   ln -sf $FG $WRK/very_first_guess
+   ln -sf $FGDFI $WRK/first_guess_dfi
+   ln -sf $FG $WRK/fc_start
+
+   # Check the SURFEX FGS
+   if [ $SURFACE = "surfex" ] ; then
+
+    if [ $ANAATMO = 4DVAR ] ; then
+     LL=$(( FCINT - 1 ))
+     Find_FG $FGDTG $LL "sfx"
+     fgs_found=$?
+     if [ $fgs_found -eq 1 ]; then
+      FGS=$found_FG
+      else
+       FGS=$not_found_FG
+      fi
+
+     
+     
+    else
+
+      ntries=1
+      [ "$RUNNING_MODE" = "operational" ] && ntries=$((24/FCINT))
+      ll=$FCINT
+      ntry=1
+      fgs_found=0
+      while [ $ntry -le $ntries -a $fgs_found -eq 0 ]; do
+	  fgdtg=$( mandtg $DTG + -$ll )
+	  Find_FG $fgdtg $ll "sfx"
+	  fgs_found=$?
+	  if [ $fgs_found -eq 0 ]; then
+	      ntry=$(( ntry + 1 ))
+	      ll=$(( ll + FCINT ))
+	      FGS=$not_found_FG
+      else
+	      FGS=$found_FG
+      fi
+      done
+
+
+    fi
+      if [ "$FIRST_FGS" != none -a $DTG -eq $DTGBEG ] ; then
+         # Redefine FGS if given by user
+         [[ -s $FIRST_FGS ]] || { echo "Could not find first FGS '$FIRST_FGS'" ; exit 1 ; }
+         FGS=$FIRST_FGS
+      fi
+
+      fail=0
+      if [ $ANASURF = none -a ${ENSMBR--1} -ne ${ENSCTL--1} ] ; then
+         echo "Surfex first guess is copied from control"
+      elif [ -s $FGS ] ; then
+
+         ln -sf $FGS $WRK/first_guess_sfx
+
+      elif [ $is_coldstart != "yes" ] ; then
+
+         # Search in ECFS
+	 Find_FG $FGDTG $FCINT "sfx" $HM_EXP
+         if [ $? -eq 1 ]; then
+	     FGS=$found_FG
+         elif [ ${ENSMBR--1} -ge 0 -a "$ENSMBR" != "$ENSCTL" ]; then
+	     ## Must use the FCINT of ENSCTL here
+	     fcint=$( perl -S Ens_util.pl -v FCINT -m $ENSCTL ENVVAR )
+	     fgdtg=$( mandtg $DTG + -$fcint )
+	     Find_FG $FGDTG $FCINT "sfx" $ARCHIVE_ROOT $ENSCTL
+	     if [ $? -eq 1 ]; then
+		 FGS=$found_FG
+	     else
+		 echo "Surfex first guess '$not_found_FG' not found!"
+		 is_coldstart=yes
+                 [ "$RUNNING_MODE" != "operational" ] && exit 1
+	     fi
+	 else
+	     echo "Surfex first guess '$not_found_FG' not found!"
+	     is_coldstart=yes
+             [ "$RUNNING_MODE" != "operational" ] && exit 1
+	 fi
+	 if [ -s "$FGS" ] ; then
+             ln -sf $FGS $WRK/first_guess_sfx
+         else
+	     echo "Surfex first guess '$FGS' not found!"
+	     is_coldstart=yes
+             [ "$RUNNING_MODE" != "operational" ] && exit 1
+	 fi
+      fi
+      if [ $is_coldstart = "yes" ] ; then
+   
+         FGS=$( grep "SURFEX_INI|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+         ln -sf $FGS $WRK/first_guess_sfx
+	 Update_is_coldstart $is_coldstart
+
+      fi
+
+      echo "Use '$FGS' as SURFEX first guess file"
+
+      # Point to the very first guess and forecast start for SURFEX
+      # If we run 4DVAR and CANARI_* no assimilation during the first cycle 
+      ln -sf $FGS $WRK/very_first_guess_sfx
+      ln -sf $FGS $WRK/fc_start_sfx
+
+   fi
+
+else
+
+   # Cold start every cycle
+
+   FG=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+
+   if [ "$FIRST_FG" != none -a $DTG -eq $DTGBEG ] ; then
+      # Redefine FG if given by user
+      [[ -s $FIRST_FG ]] || { echo "Could not find first FG $FIRST_FG" ; exit 1 ; }
+      FG=$FIRST_FG
+   elif [ $DTG -gt $DTGBEG -a $SIMULATION_TYPE == "climate" ] ; then
+      # Use the last file from the previous month as initial condition
+
+      YY=$( mandtg -year  $DTG )
+      MM=$( mandtg -month $DTG )
+
+      FGDTG=$( mandtg $YY${MM}0100 + -24 )
+
+      FGYY=$( mandtg -year  $FGDTG )
+      FGMM=$( mandtg -month $FGDTG )
+
+      FGDTG=${FGYY}${FGMM}0100
+      if [ $FGDTG -lt $DTGBEG ] ; then
+         FGDTG=$DTGBEG
+      fi
+
+      FGYY=$( mandtg -year  $FGDTG )
+      FGMM=$( mandtg -month $FGDTG )
+      FGDD=$( mandtg -day   $FGDTG )
+      FGHH=$( mandtg -hour  $FGDTG )
+      FGLL=$( mandtg $DTG - $FGDTG )
+      FGLL=$( perl -e "printf('%4.4i', $FGLL)" )
+      adir=$( ArchDir $ARCHIVE_ROOT $FGYY $FGMM $FGDD $FGHH )
+
+      FG=$adir/next_first_guess
+
+      if [ ! -s $FG ] ; then
+        FG=$adir/ICMSH${CNMEXP}+$FGLL
+        if [ ! -s $FG ] ; then
+         FF=$( basename $FG  )
+         FGD=$( dirname $FG  )
+         [[ -s $FGD ]] || { 
+          $MKDIR $FGD || { echo "Could not create directory for first guess $FGD" ; exit 1 ; }
+         } 
+ 
+         adir=$( ArchDir $HM_EXP $FGYY $FGMM $FGDD $FGHH )
+         Access_lpfs -from $adir/$FF $FG || {
+          echo " Could not find $FG "
+          exit 1
+         }
+        fi
+      fi
+
+   fi
+
+   [[ -s $FG ]] || { echo "Could not find $FG" ; exit 1 ; }
+
+   echo "Use $FG as forecast start file"
+   ln -sf $FG $WRK/fc_start
+
+   if [ $SURFACE = "surfex" ] ; then
+
+      FGS=$( grep "SURFEX_INI|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+
+      if [ "$FIRST_FGS" != none -a $DTG -eq $DTGBEG ] ; then
+         # Redefine FGS if given by user
+         [[ -s $FIRST_FGS ]] || { echo "Could not find first FGS $FIRST_FGS" ; exit 1 ; }
+         FGS=$FIRST_FGS
+      elif [ $DTG -gt $DTGBEG -a $SIMULATION_TYPE == "climate" ] ; then
+
+        adir=$( ArchDir $ARCHIVE_ROOT $FGYY $FGMM $FGDD $FGHH )
+        FGS=$adir/next_first_guess_sfx
+
+        if [ ! -s $FGS ] ; then
+         if [ $SURFEX_OUTPUT_FORMAT = "lfi" ] ; then
+          FGS=$adir/AROMOUT_.${FGLL}.lfi
+         else
+          if [ $SURFEX_LSELECT = "yes" ] ; then
+           FGS=$adir/ICMSHFULL+$FGLL.sfx
+          else
+           FGS=$adir/ICMSH${CNMEXP}+$FGLL.sfx
+          fi
+         fi
+        fi
+
+        if [ ! -s $FGS ] ; then
+          FF=$( basename $FGS )
+         FGD=$( dirname  $FGS )
+         [[ -s $FGD ]] || { 
+          $MKDIR $FGD || { echo "Could not create directory for first guess $FGD" ; exit 1 ; }
+         } 
+ 
+         adir=$( ArchDir $HM_EXP $FGYY $FGMM $FGDD $FGHH )
+         Access_lpfs -from $adir/$FF $FGS || {
+          echo " Could not find $FGS "
+          exit 1
+         }
+        fi
+      fi
+
+      if [ $ANASURF = none -a ${ENSMBR--1} -ne ${ENSCTL--1} ] ; then
+         echo "Surfex first guess is copied from control"
+      else
+        [[ -s $FGS ]] || Update_is_coldstart "yes"
+        echo "Use $FGS as SURFEX forecast start file"
+        ln -sf $FGS $WRK/fc_start_sfx
+      fi
+
+   fi
+
+fi
+
+
+#
+# Find first guess to blend with
+#
+
+if [ $ANAATMO = "blending" ] ; then
+
+   ntries=1
+   [ "$RUNNING_MODE" = "operational" ] && ntries=8
+   ll=$FCINT
+   ntry=1
+   bg_found=0
+   while [ $ntry -le $ntries -a $bg_found -eq 0 ]; do
+       bgdtg=$( mandtg $DTG + -$ll )
+       Find_FG $bgdtg $ll "md"
+       bg_found=$?
+       if [ $bg_found -eq 0 ]; then
+	   ntry=$(( ntry + 1 ))
+	   ll=$(( ll + FCINT ))
+	   BG=$not_found_FG
+     else
+	   BG=$found_FG
+     fi
+   done
+   FC_START=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+   [[ -s $FC_START ]] || { echo "Could not find $FC_START" ; exit 1 ; }
+   echo "Use $FC_START as initial file for blending"
+   ln -sf $FC_START $WRK/fc_start
+
+   # Check the upper air BG
+   if [ -s $BG ] ; then
+
+      ln -sf $BG  $WRK/blend_first_guess
+
+   elif [ $is_coldstart = "yes" ] ; then
+
+      BG=$( grep "000|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+      [[ -s $BG ]] || { echo "Could not find $BG" ; exit 1 ; }
+      ln -sf $BG $WRK/blend_first_guess
+
+   elif [ $ENSMBR -gt 0 -a "$ENSMBR" != "$ENSCTL" ] ; then
+       ## TODO: use the FCINT of ENSCTL here
+       Find_FG $FGDTG $FCINT "md" $ARCHIVE_ROOT $ENSCTL
+       if [ $? -eq 1 ]; then
+	   BG=$found_FG
+	   ln -sf $BG $WRK/blend_first_guess
+       else
+	   echo "Blending first guess '$not_found_FG' not found!"
+	   exit 1
+       fi
+   else
+
+      echo " Could not find blending first guess '$BG' "
+      exit 1
+
+   fi
+   echo "Use '$BG' as blending first guess file"
+fi
+
+# Save coldstart decision in archive
+adir=$( ArchDir $ARCHIVE_ROOT ${DTG:0:4} ${DTG:4:2} ${DTG:6:2} ${DTG:8:2} $ENSMBR )
+cp -f $WRK/is_coldstart $adir
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0

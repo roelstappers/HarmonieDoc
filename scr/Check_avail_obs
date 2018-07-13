@@ -1,0 +1,28 @@
+#!/bin/bash 
+#
+# Parse the output from Bator and check if we have any observations
+#
+
+# Limit by 2*NPOOL or one single obs
+#NLIM=$(( $NPOOL + $NPOOL ))
+NLIM=1
+
+# Input, date,type,pools
+   DAT=$1
+DATYPE=$2
+ NPOOL=$3
+
+# Signal file
+SFILE=$WRK/${DATYPE}_oper.dat
+[ -s "$SFILE" ] && rm -f "$SFILE"
+
+# Check if we have any observations 
+NUMVAR=$( grep INBOBS log"${DAT}"_"${DATYPE}".dat | tail -1 | perl -pe 's/(.*)( |=)((\d){1,}) (.*)/$3/' )
+
+echo 'OBS:', "$NUMVAR", 'LIMOBS', $NLIM 
+
+if [ "$NUMVAR" -lt $NLIM ];then
+  echo "WARNING: no ${DATYPE} da, too few observations in Bator!"
+  echo '1' > "$SFILE"
+  echo $( date +"%Y-%m-%d %T" ) DTG=${DTG}: no ${DATYPE} da, too few observations in Bator! >> $HM_DATA/severe_warnings.txt
+fi

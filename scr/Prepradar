@@ -1,0 +1,190 @@
+#!/bin/bash
+
+# 
+# Puts radar data in the work directory with naming conventions accepted by scr/Bator
+# 
+#  WMOID_vr.bfr WMOID_zh.bfr WMOID_zh.h5 or WMOID_vr.h5 where WMOID is a five digit number
+#  ex. 02451_zh.h5
+#
+# This script is tailor made to fit the needs for test data at ECMWF
+# 
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+RADARTMP=$WRK/radardata
+RecreateDir $RADARTMP
+
+# Extract time information
+DATE=$( mandtg -date $DTG )
+HH=$( mandtg -hour $DTG )
+echo $DATE
+
+
+#
+# Loop over input data for all datatypes
+# The treatment will be very source specific
+# OPHDF5:: OPERA ODIM HDF5 data available by ftp on odc.baltrad.eu
+# MFBUFR:: Meteo France flavoured BUFR data
+# LOCAL:: Your own local data format that must be converted to ODIM HDF5 or MFBUFR
+#
+for FORMAT in OPHDF5 ; do
+  case $FORMAT in
+    OPHDF5)
+   # Just copy the files to the workdirectory since we read the OPERA (ODIM) HDF5-files directly
+##for COUNTRY in DK SE FI NO PL DE BE FR NL EE; do
+
+      # Run the prepare script for thinning/superobbing and elevation separation check
+      python $HM_LIB/scr/prepopera.py -d ${DATE}${HH} -i $RADARDIR -o $RADARTMP
+      cd $WRK
+
+      # Copy the thinned files to the workdirectory
+      for COUNTRY in FI DK NO SE ; do
+        case $COUNTRY in
+          BE)
+            HDFID=(bejab bewid bezav)
+            WMOID=(06410 06477 06451)
+          ;;
+          DE)
+            HDFID=(deboo deeis deemd dedrs deess deflg deham dehnr demem deneu denhb deoft depro deros desna deumd)
+            WMOID=(10132 10780 10204 10488 10410 10908 10147 10339 10950 10557 10605 10629 10392 10169 10873 10356)
+          ;;
+          DK)
+            HDFID=(dkbor dkrom dksin dkste dkvir)
+            WMOID=(06194 06096 06034 06173 06103)
+          ;;
+          EE)
+            HDFID=(eesur eehar)
+            WMOID=(26232 26038)
+          ;;
+          ES)
+            HDFID=(esalm esbad esbar escor eslid eslpa esmad esmal esmur espma essan essev essse esval eszar)
+            WMOID=(08479 08262 08179 08007 08072 60028 08228 08475 08364 08308 08019 08386 08081 08289 08162)
+          ;;
+          FI)
+            HDFID=(fianj fiika fikor fikuo filuo fiuta fivan fivim fikes fipet)
+            WMOID=(02945 02942 02933 02918 02840 02870 02975 02925 02995 02775)
+          ;;
+          FR)
+            HDFID=(frabb frale frave frbla frbol frbor frbou frcae frche frcol frgre frlep frmcl frmom frmtc frnan frniz fropo frpla frtou frtra frtre frtro)
+            WMOID=(07005 07774 07083 07274 07569 07510 07225 07129 07336 07671 07436 07461 07637 07606 07291 07182 07381 07745 07108 07629 07145 07223 07167)
+          ;;
+          HR)
+            HDFID=(hrbil hrosi)
+            WMOID=(14256 14280)
+          ;;
+          IE)
+            HDFID=(iedub iesha)
+            WMOID=(03969 03963)
+          ;;
+          LT)
+            HDFID=(ltlau ltvil)
+            WMOID=(26518 26730)
+          ;;
+          NL)
+            HDFID=(nldbl nldhl)
+            WMOID=(06260 06234)
+          ;;
+          NO)
+            HDFID=(nohfj nober nobml nohas nohgb nohur norsa norst nosta noand nosmn)
+            WMOID=(01377 01079 01405 01042 01438 01498 01247 01104 01206 01018 01136)
+          ;;
+          PL)
+            HDFID=(plbrz plgda plleg plpas plpoz plram plrze plswi)
+            WMOID=(12568 12151 12374 12544 12331 12514 12579 12220)
+          ;;
+          RS)
+            HDFID=(rsjas)
+            WMOID=(00000)
+          ;;
+          SE)
+            HDFID=(seang searl sehem sehuv sekir sekkr selek selul seosd seovi sevax sevil)
+            WMOID=(02606 02451 02588 02334 02032 02666 02430 02092 02200 02262 02600 02570)
+          ;;
+          SI)
+            HDFID=(silis)
+            WMOID=(14024)
+          ;;
+          *)
+            echo "NO case for ${COUNTRY} implemented" 
+            exit 1 
+          ;;
+        esac        
+        INCRAD=0
+        NUMRAD=${#HDFID[@]}
+
+        while [ ${INCRAD} -lt ${NUMRAD} ] ; do
+          INFILE=$RADARDIR/r${HDFID[${INCRAD}]}_qcvol_${DATE}T${HH}0000Z_*.h5
+          OUTFILE=$RADARTMP/${WMOID[${INCRAD}]}_zh.h5
+          if [ -f $INFILE ] ; then
+               cp $INFILE $OUTFILE
+               echo "Copied $INFILE to $OUTFILE"
+          else
+               echo "Missing expected inputfile $INFILE"
+          fi
+          INCRAD=$(( INCRAD + 1 ))
+        done
+      done
+   ;;
+
+  MFBUFR)
+   # Just copy the compressed files to the workdirectory since they are 
+   # already converted to MF-BUFR. Uncopress them also
+
+   for COUNTRY in NO ; do
+     case $COUNTRY in
+       NO)
+         # HDFID given just for consistency with the list above
+         HDFID=(nohfj nober nobml nohas nohgb nohur norsa norst nosta noand nosmn)
+         WMOID=(01377 01079 01405 01042 01438 01498 01247 01104 01206 01018 01136)
+       ;;
+       *)
+        echo "NO case for ${COUNTRY} implemented" 
+        exit 1 
+       ;;
+     esac        
+
+     INCRAD=0
+     NUMRAD=${#WMOID[@]}
+
+     while [ ${INCRAD} -lt ${NUMRAD} ] ; do
+       INFILE=$RADARDIR/${WMOID[${INCRAD}]}_dbz_${DATE}${HH}??.bfr.gz
+       OUTFILE=$RADARTMP/${WMOID[${INCRAD}]}_zh.bfr.gz
+       if [ -f $INFILE ] ; then
+          cp $INFILE $OUTFILE
+          echo "Copied $INFILE to $OUTFILE"
+       else
+          echo "Missing expected inputfile $INFILE"
+       fi
+       INCRAD=$(( INCRAD + 1 ))
+     done
+   done
+   gunzip $RADARTMP/*.gz
+   ;;
+
+ LOCAL)
+   echo "Prepradar:: add processing of local radar format here"
+   echo "Prepradar:: you may wish to call CONRAD from here!?"
+   exit 1 
+   ;;
+ *)
+   echo "NO case for $FORMAT implemented" 
+   exit 1 
+   ;;
+
+ esac
+
+
+done
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

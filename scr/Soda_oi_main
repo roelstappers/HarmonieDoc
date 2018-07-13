@@ -1,0 +1,121 @@
+#!/bin/bash 
+#  
+# OI_MAIN
+#
+# Surfex surface analysis
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+log="LISTING_SODA.txt"
+
+trap "Cat_logs $log ; Trapbody $WDIR " 0
+
+
+# Link Ecoclimap cover files
+ln -sf $CLIMATE/*.bin .
+
+# Fetch first_guess and result from CANARI
+ln -s $WRK/first_guess          FG_OI_MAIN
+ln -s $WRK/CANARI               CANARI
+
+#--- ECMWF SST and SIC interpolated to model domain
+if [ "$HOST_MODEL" == "ifs" ] ; then
+  LECSST=.TRUE.
+  ln -sf  $WRK/ECMWF_CANARI_SST_SIC SST_SIC
+  [[ -f ./SST_SIC ]] || { echo "No ECMWF SST and SIC found" ; exit 1 ; }
+else
+  LECSST=.FALSE.
+  ln -sf $WRK/ELSCFHARMALBC000 SST_SIC
+fi
+
+# Copy first guess for surfex to PREP.
+# SURFEX need full file because it corrects with increments
+if [ $SURFEX_OUTPUT_FORMAT = "lfi" ] ; then
+  cp $WRK/first_guess_sfx PREP.lfi
+else
+  conv sfxfa2lfi $WRK/first_guess_sfx PREP.lfi
+fi
+
+# Climate file
+MM=$( mandtg -month $DTG )
+ln -s $CLIMDIR/m$MM clim_isba
+ln -s $CLIMDIR/PGD.lfi PGD.lfi
+
+# CANARI coefficients (fort.61)
+cp -f ${HM_LIB}/const/sa_const/POLYNOMES_ISBA fort.61 || \
+      { echo "No ISBA file to run CANARI!" ; exit 1 ; }
+
+# Get namelist
+if [ $PHYSICS = "arome" ] ; then
+   LAROME=.TRUE.
+else
+   LAROME=.FALSE.
+fi
+
+# Snow analysis from CANARI updated in OI_MAIN 
+if [ "$HH" -eq "06" ]; then
+  LAESNM=.TRUE.
+else
+  LAESNM=.FALSE.
+fi
+
+CSURF_FILETYPE="LFI   "
+NAMELIST=$WRK/$WDIR/namelist_sfx_oi_main
+Get_namelist sfx_oi_main $NAMELIST
+sed -e "s/=LAROME/=$LAROME/" \
+    -e "s/=LECSST/=$LECSST/" \
+    -e "s/=LAESNM/=$LAESNM/" \
+    -e "s/=CSURF_FILETYPE/=\"$CSURF_FILETYPE\"/" \
+    $NAMELIST > OPTIONS.nam
+
+# Show namelist
+Cat_logs OPTIONS.nam
+
+#
+# Run OI_MAIN
+#
+export DR_HOOK_NOT_MPI=1
+##export DR_HOOK=1
+##export DR_HOOK_OPT=prof
+$MPPEXEC $BINDIR/SODA
+
+Cat_logs $log
+
+nprof=$( ls -1 drhook.prof.* 2>/dev/null | wc -l )
+[[ $nprof -gt 0 ]] && { tar cvf $ARCHIVE/${TASK}_prof.tar drhook.prof.* ; }
+
+# Archive result and redirect first guess
+
+mv PREP.lfi $ARCHIVE/PREP.lfi 
+if [ $SURFEX_OUTPUT_FORMAT == "lfi" ] ; then
+  ln -sf $ARCHIVE/PREP.lfi $WRK/first_guess_sfx
+  ln -sf $ARCHIVE/PREP.lfi $WRK/fc_start_sfx
+else
+  conv sfxlfi2fa $ARCHIVE/PREP.fa $ARCHIVE/PREP.lfi $WRK/first_guess_sfx
+  ln -sf $ARCHIVE/PREP.fa $WRK/first_guess_sfx
+  ln -sf $ARCHIVE/PREP.fa $WRK/fc_start_sfx
+fi
+
+#
+
+# Redirect first_guess to CANARI output for upper air if LSMIXBC=yes
+if [ "$LSMIXBC" = "yes" ]; then
+  ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/first_guess
+  ln -sf $ARCHIVE/ICMSHANAL+0000 $WRK/fc_start
+fi
+
+#------------------------------- 
+# Tidy up and terminate 
+#------------------------------- 
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+ 
+exit 0

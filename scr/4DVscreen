@@ -1,0 +1,301 @@
+#!/bin/bash
+#-----------------------------------------------------------------------
+# Run 4D screening (configuration 002 of ARPEGE/IFS model):
+# quality control of observation.
+#---------------------------------------------------------------------
+# Inputs:
+#
+#   #--first guess :
+#     ICMSHSCREINIT 
+#
+#   #-Lateral boundary conditions
+#     ELSCFSCREALBC000 ELSCFSCREALBC001 ELSCFSCREALBC002
+#
+#   #--Input/output ODB directory structure
+#     ${d_DB}/ECMA
+#            /ECMA.${base1}
+#            ....
+#
+#   #--Constants and statistics
+#     (1)correl.dat (2)sigmab.dat (3)rszcoef_fmt (4)errgrib
+#     (5)rt_coef_atovs_newpred_ieee.dat
+#     (6)bcor_noaa.dat (7)chanspec_noaa.dat
+#     (8)rmtberr_noaa.dat (9)cstlim_noaa.dat
+#
+# Output:
+#    The quality control information will be put into the
+#    input ODB.
+#-----------------------------------------------------------
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+d_SCREENING=$WRK/$WDIR
+
+export ODB_CMA=ECMA
+#export ODB_REPRODUCIBLE_SEQNO=0
+export ODB_CCMA_TSLOTS=7
+
+# END OF ODB START
+
+#-- Get Environmental variables
+ . include.ass
+
+#--merge the ODB sub-bases i.e. create an
+#  ECMA virtual base
+export d_DB=$WRK/odb
+$HM_LIB/scr/Merge_4d -s SCREENING
+
+#--- Declare Local vars
+typeset d_DB
+d_DBVAR=$WRK/odbvar
+d_DB_OUT=$WRK/odb_ccma
+
+#-- Copy the ODB for Screening
+InitDir $d_DB $d_DBVAR || exit 1
+
+#-- enter the working dir
+cd ${d_SCREENING}  || exit 1
+
+for old_file in ICMSHMIN1IMIN ICMRFMIN110000 ICMSHIMIN1INIT `ls ELS*` \
+    fort.4 bcor_noaa.dat; do
+        [[ -s ${old_file} ]] && rm -f ${old_file}
+done
+
+#--- fetching consts
+ln -s ${HM_LIB}/const/bias_corr/correl.dat  correl.dat
+ln -s ${HM_LIB}/const/bias_corr/sigmab.dat  sigmab.dat
+ln -s ${HM_LIB}/const/bias_corr/rszcoef_fmt rszcoef_fmt
+ln -s ${HM_LIB}/const/bias_corr/errgrib0scr errgrib
+ln -s ${HM_LIB}/const/bias_corr/cstlim_noaa.dat  cstlim_noaa.dat
+ln -s ${HM_LIB}/const/bias_corr/var.amv* .
+
+ln -sf $HM_LIB/const/rrtm_const/* .
+
+#--- RTTOV coeffs
+ln -sf ${HM_SAT_CONST}/* .
+ln -sf ./rtcoef_metop_2_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_2_iasi.dat
+
+#--- RADIOSONDE BIAS CORRECTION
+for tabfile in table1 table2 table3; do
+   cp -fp ${HM_LIB}/const/bias_corr/$tabfile .
+done
+
+#--- VARBC files
+if [ $LVARBC = "T" ]; then
+
+  BEG_DIFF=`mandtg $DTG - $DTGBEG`
+  if [ "$VARBC_COLD_START" == "yes" -a $BEG_DIFF -gt 30 -o "$VARBC_COLD_START" == "no" ]; then
+
+    if [ ! -s $WRK/VARBC.cycle ]; then
+      echo "You don t have VARBC table from the earlier run please check the content of your WORKDIR "
+      exit 1
+    fi
+    cp $WRK/VARBC.cycle  ./VARBC.cycle
+  fi 
+
+fi
+
+#--- check odb
+CheckDir ${d_DBVAR}
+
+#---  ODB settings for screening
+export ODB_CMA=ECMA
+export ODB_SRCPATH_ECMA=${d_DBVAR}/ECMA
+export ODB_DATAPATH_ECMA=${d_DBVAR}/ECMA
+export ODB_ANALYSIS_DATE=${YMD}
+export ODB_ANALYSIS_TIME=${HH}0000
+export ODB_ECMA_POOLMASK_FILE=${d_DBVAR}/ECMA/ECMA.poolmask
+
+if [ $ODB_CCMA_CREATE_DIRECT -eq 1 ];then
+
+  $MKDIR ${d_DB_OUT}/CCMA
+  export ODB_SRCPATH_CCMA=${d_DB_OUT}/CCMA
+  export ODB_DATAPATH_CCMA=${d_DB_OUT}/CCMA
+  export ODB_CCMA_POOLMASK_FILE=${d_DB_OUT}/CCMA/CCMA.poolmask
+  export IOASSIGN=${d_DB_OUT}/CCMA/IOASSIGN
+  export ODB_FEBINPATH=${BINDIR}
+  cd ${d_DB_OUT}/CCMA
+  rm -f ${IOASSIGN}
+  if [[ ${NPROC} -lt 32 ]] || [[ $ODB_IO_METHOD -eq 4 ]] ; then
+    IOBUF=8m
+  else
+    IOBUF=1m
+  fi
+  create_ioassign -l "CCMA" -b ${IOBUF} -n ${NPROC}
+  grep ECMA ${d_DBVAR}/ECMA/IOASSIGN >> ${IOASSIGN} || true
+  cd -
+else
+  export IOASSIGN=${d_DBVAR}/ECMA/IOASSIGN
+fi
+
+#--- ODB Debug
+if [ $ODB_VERBOSE_OUT -eq 1 ];then
+  export ODB_TRACE_PROC=-1
+  export ODB_TRACE_FILE=${d_SCREENING}/trace.%d
+  export ODB_TRACE_FLUSH_FREQ=1
+  export DR_HOOK=1
+fi
+
+. forecast_model_settings.sh
+
+# Input data for MSG cloud initialization                                      
+if [ "$USE_MSG" = yes ] ; then
+  MSGFILE=$MSG_PATH/MSGcloud$DTG
+  if [ -e $MSGFILE ] ; then
+   export LMSGINIT=.TRUE.
+   ln -sf $MSGFILE ICMSHHARMANIN
+  else
+   export LMSGINIT=.FALSE.
+  fi
+fi
+
+if [ "$SURFACE" == surfex ] ; then
+
+  # Surfex output format
+  if [ "$SURFEX_OUTPUT_FORMAT" == lfi ] ; then
+    LFMWRIT=.TRUE.
+    LFMREAD=.TRUE.
+    LFAPGD=.FALSE.
+  else
+    LFMWRIT=.FALSE.
+    LFMREAD=.FALSE.
+    LFAPGD=.TRUE.
+  fi
+fi
+
+NRAZTSLIST="0"
+WRITELIST="0"
+WRITESLIST="0"
+NFPOS=0
+N1SFXHIS=0
+
+#
+# ** Note that for in-line perturbation using the ECMAIN technique,
+# ** LPERTURB should be .true., which is set in config_exp.h
+#
+
+#--- prepare namelist
+NAMELIST=$WRK/$WDIR/namelist_screen4d
+Get_namelist screen4d $NAMELIST
+
+sed \
+    -e "s/NCONF=NCONF/NCONF=002/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"SCRE\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h2\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    -e "s/LLINC/$LLINC/" \
+    -e "s/WRITESLIST/$WRITESLIST/" \
+    -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=$N1SFXHIS/" \
+    -e "s/WRITELIST/$WRITELIST/" \
+    -e "s/NRAZTSLIST/$NRAZTSLIST/" \
+    -e "s/ZNEN1/$ZNEN1/g" \
+    -e "s/ZNEN2/$ZNEN2/g" \
+    -e "s/ZNEK0/$ZNEK0/g" \
+    -e "s/ZNEK1/$ZNEK1/g" \
+    -e "s/ZNRADFR/$ZNRADFR/g" \
+    -e "s/NBPROC/$NPROC/g" \
+    -e "s/NPROCX/$NPROCX/g" \
+    -e "s/NPROCY/$NPROCY/g" \
+    -e "s/NPOSTS=NPOSTS/NPOSTS=$NPOSTS/g" \
+    -e "s/NFPOS=NFPOS/NFPOS=$NFPOS/g" \
+    -e "s/NNOEXTZX=0/NNOEXTZX=$NNOEXTZX/g" \
+    -e "s/NNOEXTZY=0/NNOEXTZY=$NNOEXTZY/g" \
+    -e "s/=LFMWRIT/=$LFMWRIT/g" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    -e "s/ICLOUDFRACTI/0/g" \
+    -e "s/LCLOUDFRACTI/.FALSE./g" \
+    -e "s/ITKE/-1/g" \
+    -e "s/LSPBDC=.FALSE./LSPBDC=${lspbdc}/g" \
+    -e "s/LMSGINIT=.FALSE./LMSGINIT=$LMSGINIT/g" \
+    -e "s/LVARBC=LVARBC/LVARBC=$LVARBC/g" \
+    -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+    -e "s/LPERTURB=LPERTURB/LPERTURB=$LPERTURB/g" \
+    -e "s/NAEMEMBER=NAEMEMBER/NAEMEMBER=$ENSMBR/g" \
+    $NAMELIST > fort.4 || \
+    { echo "Sorry, no namelist!" ; exit 1 ; }
+
+#
+# Setup SURFEX files if applicable
+#
+if [ "$SURFACE" = surfex ] ; then
+
+  NSTEP_DUMP_STATES="-1"
+
+  lpertsurf=.FALSE.
+  if [ "$PERTSURF" = 'model' ]; then
+      [ "$ENSMBR" != "$ENSCTL" -a $is_coldstart != "yes" ] && lpertsurf=.TRUE.
+  fi
+
+  # Copy namelist
+  NAMELIST=$WRK/$WDIR/EXSEG1.nam
+  Get_namelist sfx_forecast $NAMELIST
+
+  sed -e "s/NSTEP_DUMP_STATE=NSTEP_DUMP_STATE/NSTEP_DUMP_STATE=$NSTEP_DUMP_STATES/" \
+      -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+      -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+  $NAMELIST > EXSEG1.nam.tmp || \
+    { echo "Sorry, no namelist!" ; exit 1 ; }
+
+  mv EXSEG1.nam.tmp $NAMELIST
+
+
+  # Copy the surfex file
+  if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+    ln -sf $WRK/fc_start_sfx TEST.lfi
+    ln -sf $CLIMDIR/PGD.lfi  .
+  else
+    ln -sf $CLIMDIR/Const.Clim.sfx Const.Clim.sfx
+    ln -sf $WRK/fc_start_sfx       ICMSHSCREINIT.sfx
+  fi
+
+  ln -sf $CLIMDIR/*.bin .
+
+fi
+
+# Get first guess and lateral boundaries
+
+ln -sf $WRK/first_guess ICMSHSCREINIT
+ln -sf $WRK/first_guess ELSCFSCREALBC000
+
+INT_BDDIR=$( dirname $INT_BDFILE )
+
+II=1
+FF=0
+while [ $FF -le 1 ] ; do
+  FFF=$( perl -e "printf('%3.3i', '$FF')" )
+  III=$( perl -e "printf('%3.3i', '$II')" )
+   FILE=$( grep "${FFF}|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+   ln -sf $FILE ELSCFSCREALBC$III
+   FF=$( expr $FF + 1 )
+   II=$( expr $II + 1 )
+done
+
+
+Cat_logs fort.4 EXSEG1.nam
+
+$MPPEXEC $BINDIR/$MODEL  || exit 1
+
+Cat_logs NODE.001_01
+
+[[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+if [ $LVARBC = "T" ]; then
+  cp ./VARBC.cycle $WRK/VARBC.cycle
+fi
+
+# Normal exit
+cd $WRK
+rm -fr $WDIR
+trap - 0
+exit

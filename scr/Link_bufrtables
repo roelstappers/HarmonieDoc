@@ -1,0 +1,17 @@
+#!/bin/bash
+
+#
+# Create bufr table links if:
+# - BUFR_TABLES directory is writable
+# - Links have not already been created
+# - The link script exists
+#
+
+
+if [ -w $BUFR_TABLES -a ! -s $BUFR_TABLES/links_created -a -s $BUFR_TABLES/links.sh ] ; then
+
+  cd $BUFR_TABLES || exit
+  ./links.sh
+  date > links_created
+
+fi

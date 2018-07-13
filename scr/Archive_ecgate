@@ -1,0 +1,24 @@
+#!/bin/bash
+
+. header.sh
+. include.ass
+
+#[ "$SMSTRYNO" -gt 1 ] && sleep `expr $SMSTRYNO \* 150`
+
+# Create the directory for this day
+Access_lpfs -mkdir ${ECFSLOC}:${HM_EXP}/$YY/$MM/$DD/
+
+cd $ARCHIVE_ROOT/log
+
+# Summarize the SBUs for this cycle
+GetSBU.pl HM_*_${DTG}.html >> $HM_DATA/SBU.log
+
+# Archive logfiles from the current cycle
+tar cvf logfiles.tar HM_*_${DTG}.html
+Access_lpfs -to logfiles.tar ${ECFSLOC}:${HM_EXP}/$YY/$MM/$DD/${HH}/logfiles.tar
+
+# Clean
+rm -f logfiles.tar
+
+trap 0 
+exit

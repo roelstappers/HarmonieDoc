@@ -1,0 +1,391 @@
+#!/bin/bash
+#
+# This is the main script for running the forecast model
+#
+
+# Create working directory and set the trapping
+. header.sh
+. functions.ksh
+
+cd "$WRK"
+rm -rf forecast
+WDIR=forecast
+Workdir $WDIR
+
+FC_SIGNALS=$WRK/fc_signals
+FP_SIGNALS=$WRK/fp_signals
+rm -f $WRK/fc_complete
+
+trap "Cat_logs NODE.* OUTPUT_LISTING; echo aborted > $WRK/fc_aborted ; Trapbody $WDIR ; exit 1" 0
+
+
+# Consistency check
+NPROC_IO=${NPROC_IO:-0}
+
+if [ "$IO_SERVER" = yes ] ; then
+ if [ "$NPROC_IO" -eq 0 ] ; then
+    echo "IO server requestes, but without any IO procs. Set NPROC_IO in Env_submit"
+    exit 1
+ fi
+
+ if [ "$IO_SERVER_BD" = yes ] ; then
+  COUPDIR=$WRK/coupling
+  $MKDIR $COUPDIR
+  export CIFDIR=\"$COUPDIR\"
+ fi
+
+fi   
+
+########################
+CFPATH="ICMSH"
+#######################
+
+# Clean cycle directory for old forecast files and listener file
+
+rm -f $WRK/fc_aborted
+rm -f $ARCHIVE/${CFPATH}${CNMEXP}+*
+rm -f $ARCHIVE/PF${CNMEXP}${DOMAIN}+*
+rm -f $ARCHIVE/AROMOUT_.*.lfi
+rm -f $FC_SIGNALS $FP_SIGNALS
+ln -sf $FC_SIGNALS hiwif
+ln -sf $FP_SIGNALS ncf927
+[ -f $WRK/listener.txt ] && rm $WRK/listener.txt
+[ -f $WRK/listener_pp.txt ] && rm $WRK/listener_pp.txt
+[ -f $WRK/registry_makegrib ] && rm $WRK/registry_makegrib
+#
+#
+
+NCONF=001	         	# IFS configuration
+LSLAG=".TRUE."          # SL Advection
+NFOST=0                 # Setings for Linear/Quadratic grid
+GRID_TYPE_LCQ=".FALSE." # Switch  to enable quadratic grid computations
+is_coldstart=$( cat $WRK/is_coldstart )
+
+case $GRID_TYPE in
+  "LINEAR" )
+  [ $is_coldstart = "yes" ] && NFOST=6
+;;
+  "QUADRATIC" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+  "CUBIC" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+  "CUSTOM" )
+  NFOST=6
+  GRID_TYPE_LCQ=".TRUE."
+;;
+*)
+  echo "Wrong grid type $GRID_TYPE"
+  exit 1
+;;
+esac
+echo ' TSTEP='$TSTEP
+
+#
+# Modify namelist
+#
+
+# Boundary file interval
+LBDINT=$(( BDINT * 3600 ))
+
+
+# Generating the NHISTS=WRITELIST and NSHISTS=WRITESLIST arrays needed 
+# in namelists
+
+perl -S Output_freq.pl TEST || exit 1
+
+NRAZTSLIST=$( perl -S Output_freq.pl NRAZTS )
+HWRITELIST=$( perl -S Output_freq.pl NHISTS )
+SWRITELIST=$( perl -S Output_freq.pl NSHISTS )
+SFXFLIST=$( perl -S Output_freq.pl SFXFLIST )
+
+if [ "$IO_SERVER" == no ]; then
+  # Create links for output files
+  OUTLIST=$( perl -S Output_freq.pl OUTLIST )
+  for FF in $OUTLIST; do
+    IIII=$( perl -e "printf('%4.4i', '$FF')" )
+    ln -sf "$ARCHIVE"/"${CFPATH}${CNMEXP}"+"$IIII" "${CFPATH}${CNMEXP}"+"$IIII"
+  done
+  if [ "$POSTP" == inline ]; then
+    FPOUTLIST=$( perl -S Output_freq.pl POSTLIST )
+    for FF in $FPOUTLIST; do
+      IIII=$( perl -e "printf('%4.4i', '$FF')" )
+      ln -sf "$ARCHIVE"/PF"${CNMEXP}${DOMAIN}"+"$IIII" PF"${CNMEXP}${DOMAIN}"+"$IIII"
+    done
+  fi
+fi
+
+# Input data for MSG cloud initialization
+export LMSGINIT=.FALSE. 
+if [ "$USE_MSG" = yes ] ; then
+  MSGFILE=$MSG_PATH/MSGcloud$DTG
+  if [ -e $MSGFILE ] ; then
+   LMSGINIT=.TRUE.
+   ln -sf $MSGFILE ICMSHHARMANIN
+  else
+   LMSGINIT=.FALSE.
+  fi
+fi
+
+if [ $SIMULATION_TYPE == "climate" ] ; then
+  IIII=$( perl -e "printf('%4.4i', '$LL')" )
+
+  # Create pointer to the first guess of next month
+  ln -sf $ARCHIVE/ICMSH${CNMEXP}+$IIII $ARCHIVE/next_first_guess
+
+  if [ $SURFACE == "surfex" -a "$SURFEX_LSELECT" == "yes" ] ; then
+    # Create link for SURFEX restart file
+    ln -sf $ARCHIVE/${CFPATH}"FULL+"$IIII.sfx $ARCHIVE/next_first_guess_sfx
+  else
+    if [ "$SURFEX_OUTPUT_FORMAT" == "lfi" ]; then
+      ln -sf $ARCHIVE/AROMOUT_.$IIII.lfi $ARCHIVE/next_first_guess_sfx
+    else
+      ln -sf $ARCHIVE/ICMSH${CNMEXP}+$IIII.sfx $ARCHIVE/next_first_guess_sfx
+    fi
+  fi
+fi
+
+N1SFXHIS=0
+if [ "$SURFACE" == surfex ] ; then
+  SFXLIST=$( perl -S Output_freq.pl SFXLIST )
+  [[ "$SFXLIST" =~ [0-9]{1,} ]] && N1SFXHIS=1
+ 
+  if [ "$IO_SERVER" == no -o "$SURFEX_OUTPUT_FORMAT" = lfi ]; then
+    for FF in $SFXLIST; do
+      IIII=$( perl -e "printf('%4.4i', '$FF')" )
+      if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+        ln -sf "$ARCHIVE"/AROMOUT_."${IIII}".lfi AROMOUT_."${IIII}".lfi
+      else
+        ln -sf "$ARCHIVE"/"${CFPATH}${CNMEXP}"+"$IIII".sfx "${CFPATH}${CNMEXP}"+"$IIII".sfx
+        if [ $SURFEX_LSELECT = "yes" ] ; then
+          if [ $TFLAG == "min" ] ; then
+            III=$(( FF * TSTEP / 60 ))
+            III=$( perl -e "printf('%3.3i', '$III')" )
+          else
+            III=$( perl -e "printf('%3.3i', '$FF')" )
+          fi
+         
+          check_match.pl $SFXFULLTIMES $III && \
+             { ln -sf "$ARCHIVE"/"${CFPATH}FULL"+"$IIII".sfx "${CFPATH}FULL"+"$IIII" ; }
+        fi
+      fi
+    done
+  fi
+
+  # Surfex output format
+  if [ "$SURFEX_OUTPUT_FORMAT" == lfi ] ; then
+    LFMWRIT=.TRUE.
+    LFMREAD=.TRUE.
+    LFAPGD=.FALSE.
+  else
+    LFMWRIT=.FALSE.
+    LFMREAD=.FALSE.
+    LFAPGD=.TRUE.
+  fi
+fi
+
+# Forecast settings shared between Forecast and 4DV[screen|minim|traj]
+. forecast_model_settings.sh
+
+# selective namelists
+NFPOS=0
+NPOSTS=0
+if [ "$POSTP" = inline ]; then
+  NFPOS=1
+  NPOSTS=$( perl -S Output_freq.pl NPOSTS )
+fi
+
+
+# 
+# Check if TKE is in the input field
+# Do not use TKE==0.0 from the IFS files since it may give negative values and ABORT 
+# when it is read in the model.
+# 
+ITKE="-1"
+if [ $HOST_MODEL = "ifs" ] ; then
+ if [ $is_coldstart != "yes" -a "${INITTKE-yes}" = yes ]; then
+   ITKE="1"
+ fi
+else
+ if [ $( $BINDIR/domain_prop_grib_api -f -CHECK_FIELD S001TKE $WRK/fc_start | tail -1 ) -eq 1 -a "${INITTKE-yes}" = yes ] ; then
+   ITKE="1"
+ fi
+fi
+
+# Check if Cloud fraction is in the input field
+LCLOUDFRACTI=".FALSE."
+ICLOUDFRACTI="-1"
+if [ $PHYSICS = "arome" ] ; then
+ if [ "${INITCLOUDFRACTI-yes}" = yes ]; then
+   LCLOUDFRACTI=".TRUE."
+   if [ $( $BINDIR/domain_prop_grib_api -f -CHECK_FIELD S001CLOUD_FRACTI $WRK/fc_start | tail -1 ) -eq 1 ] ; then
+    ICLOUDFRACTI="1"
+   fi
+ else
+   LCLOUDFRACTI=".FALSE."
+ fi
+fi
+
+# Get resolution dependent SPPT settings in case of SPG
+spgparam=$CLIMDIR/SPG_param.sh
+if [ -s $spgparam ]; then
+    export SPGLAMBDA_SDT SPGMU_SDT SPGSIGMA_SDT
+. $spgparam
+fi
+
+#  Get namelist name
+NAMELIST=$WRK/$WDIR/namelist_forecast
+Get_namelist forecast "$NAMELIST"
+
+sed -e "s/BDINT/$LBDINT/" \
+    -e "s/LLINC/$LLINC/" \
+    -e "s/WRITESLIST/$SWRITELIST/" \
+    -e "s/N1SFXHIS=N1SFXHIS/N1SFXHIS=$N1SFXHIS/" \
+    -e "s/WRITELIST/$HWRITELIST/" \
+    -e "s/NRAZTSLIST/$NRAZTSLIST/" \
+    -e "s/ZNEN1/$ZNEN1/g" \
+    -e "s/ZNEN2/$ZNEN2/g" \
+    -e "s/ZNEK0/$ZNEK0/g" \
+    -e "s/ZNEK1/$ZNEK1/g" \
+    -e "s/ZNRADFR/$ZNRADFR/g" \
+    -e "s/NBPROC/$NPROC/g" \
+    -e "s/NPROCX/$NPROCX/g" \
+    -e "s/NPROCY/$NPROCY/g" \
+    -e "s/NPOSTS=NPOSTS/NPOSTS=$NPOSTS/g" \
+    -e "s/NFPOS=NFPOS/NFPOS=$NFPOS/g" \
+    -e "s/=LFMWRIT/=$LFMWRIT/g" \
+    -e "s/=LFMREAD/=$LFMREAD/g" \
+    -e "s/=LFAPGD/=$LFAPGD/g" \
+    -e "s/NCONF=NCONF/NCONF=$NCONF/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"$CNMEXP\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"h$LL\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=$LSLAG/g" \
+    -e "s/=LGRADSP/=$lgradsp/g" \
+    -e "s/=LUNBC/=$lunbc/g" \
+    -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+    -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+    -e "s/ITKE/$ITKE/g" \
+    -e "s/LSPBDC=.FALSE./LSPBDC=${lspbdc}/g" \
+    -e "s/NFOST=0/NFOST=$NFOST/g" \
+    -e "s/GRID_TYPE_LCQ=.FALSE./GRID_TYPE_LCQ=$GRID_TYPE_LCQ/g" \
+    "$NAMELIST" > fort.4
+
+# Setup inline fullpos ( amendment to fort.4 )
+if [ "$POSTP" == inline ]; then  
+  Setup_inline_postp || exit
+fi
+
+#
+# Setup SURFEX files if applicable
+#
+if [ "$SURFACE" = surfex ] ; then
+
+  NSTEP_DUMP_STATES="-1"
+  if [ $SURFEX_LSELECT = "yes" ] ; then
+    # Dump at for the first guess
+    NSTEP_DUMP_STATES=""
+    for F in $SFXFLIST ; do
+     if [ $TFLAG == "min" ] ; then
+      NSTEP_DUMP_STATES="$NSTEP_DUMP_STATES,$F"
+     else
+      NSTEP_DUMP_STATES="$NSTEP_DUMP_STATES,$(( 10#$F * 3600 / $TSTEP ))"
+     fi
+    done
+    NSTEP_DUMP_STATES=$( echo $NSTEP_DUMP_STATES | sed 's/^,//' )
+
+  fi
+  lpertsurf=.FALSE.
+  if [ "$PERTSURF" = 'model' ]; then
+      [ "$ENSMBR" != "$ENSCTL" -a $is_coldstart != "yes" ] && lpertsurf=.TRUE.
+  fi
+
+  # Copy namelist
+  NAMELIST="$WRK"/"$WDIR"/namelist_sfx_forecast
+  Get_namelist sfx_forecast 
+  sed -e "s/NSTEP_DUMP_STATE=NSTEP_DUMP_STATE/NSTEP_DUMP_STATE=$NSTEP_DUMP_STATES/" \
+      -e "s/LPERTSURF=LPERTSURF/LPERTSURF=$lpertsurf/" \
+      -e "s/LPERTFLUX=LPERTSURF/LPERTFLUX=$lpertsurf/" \
+  "$NAMELIST" > EXSEG1.nam
+
+  # Copy the surfex file
+  if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+    ln -sf $WRK/fc_start_sfx  TEST.lfi
+    ln -sf "$CLIMDIR"/PGD.lfi .
+  else
+    ln -sf "$CLIMDIR"/Const.Clim.sfx Const.Clim.sfx
+    ln -sf "$WRK"/fc_start_sfx ICMSH"${CNMEXP}"INIT.sfx
+  fi
+
+  ln -sf $CLIMDIR/*.bin .
+
+fi
+
+# Link RRTM files
+ln -sf "$HM_LIB"/const/rrtm_const/* .
+
+#
+#
+# Link initial and boundary files 
+#
+#
+
+echo "fc_start is :"
+ls  -l "$WRK"/fc_start
+ln -sf "$WRK"/fc_start ICMSH"${CNMEXP}"INIT
+
+II=0
+FF=0
+BDLL=$(( LL + BDINT - 1 ))
+while [ $FF -le $BDLL ] ; do
+  FFF=$( perl -e "printf('%3.3i', '$FF')" )
+  III=$( perl -e "printf('%3.3i', '$II')" )
+  FILE=$( grep "${FFF}|" "$WRK"/bdstrategy | awk '{print substr($2,1)}' ) 
+  ln -sf "$FILE" ELSCF"${CNMEXP}"ALBC"$III"
+  
+  if [ "$IO_SERVER_BD" = yes ] ; then
+    FFFF=$( perl -e "printf('%4.4i', '$FF')" )
+    ln -sf "$FILE" "${COUPDIR}"/ICMSH"${CNMEXP}"+"$FFFF"
+  fi
+  
+  if [ "$LSPBDC" = yes ]; then
+    ln -sf "${FILE}"_2 ELSCF"${CNMEXP}"ALBC"${III}"_2
+  fi
+  [[ $SIMULATION_TYPE == "climate" ]] && \
+  ln -sf $WRK/ECMWF_SST_SIC$III  ECMWF_SST_SIC$III
+  FF=$(( FF + BDINT ))
+  II=$(( II + 1 ))
+done
+
+ln -sf "$WRK"/fc_start ELSCF"${CNMEXP}"ALBC000
+
+# Remove possible registry files
+# When starting a new forecast we assume we would like the listener 
+# to process the new files as well
+rm -f "$WRK"/registry_*
+
+#
+# Execute
+#
+
+Cat_logs fort.4
+if [ "$SURFACE" = surfex ] ; then
+  Cat_logs EXSEG1.nam
+fi
+
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.*
+
+[[ -s drhook.prof.1 ]] && { tar cvf "${TASK}"_prof.tar drhook.prof.* ; mv "${TASK}"_prof.tar "$ARCHIVE" ; }
+
+# Create a signal file for Listen
+echo COMPLETE > $WRK/fc_complete
+
+# Normal exit, but keep the directory so that 
+# the listener can finish
+cd ..
+trap - 0

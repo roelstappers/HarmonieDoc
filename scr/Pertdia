@@ -1,0 +1,76 @@
+#!/bin/bash
+
+set -x 
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+my_ll=${1--1}
+
+#
+# Check perturbation size by letting xtool calculate MIN,AVE,MAX,RMSE for each parameter
+#
+
+# Find files used to compute perturbation
+ensctl=${ENSCTL?"ENSCTL not set - fatal error in PertAna"}
+eee=$( perl -e 'printf("%03d",shift)' $ensctl )
+
+echo
+echo "Check perturbations for member $ENSMBR against $ensctl"
+echo "SLAFLAG=$SLAFLAG SLAFK=$SLAFK SLAFDIFF=$SLAFDIFF"
+echo
+
+cat > naminterp << EOF
+&naminterp
+READKEY%NAME='SNNNTEMPERATURE','SNNNHUMI.SPECIFI',
+             'SNNNWIND.U.PHYS','SNNNWIND.V.PHYS',
+             'SURFPRESSION',
+ISTOP=-$EZONE
+JSTOP=-$EZONE
+/
+EOF
+
+L=0
+while [ $L -le $LL ] ; do
+
+  if [ $my_ll -ge 0 -a $L -ne $my_ll ]; then
+    # This hour is skipped, handled by another task
+    true
+  else
+    LLL=$( perl -e 'printf("%03d",shift)' $L )
+    PERTBD=$( grep "$LLL|" $WRK/bdstrategy | awk '{print substr($2,1)}' )
+    CONTROL=$( grep "$LLL|" $WRK/../mbr$eee/bdstrategy | awk '{print substr($2,1)}' )
+    if [ -s ${CONTROL}_nopert ] ; then
+      # This is a quasi-control and we don't have any more unperturbed references
+      # so we only diagnose L=0
+      CONTROL=${CONTROL}_nopert
+      # The L=$LL trick does not work in multi_task mode
+      [ $my_ll -lt 0 ] && L=$LL
+    fi
+
+    if [ "$PERTBD" != "$CONTROL" ]; then
+
+      cp $PERTBD  ./PERTBD
+      cp $CONTROL ./CONTROL
+
+      echo
+      echo "Start check boundary $LLL"
+      $MPPGL $BINDIR/xtool_grib_api -f -f1 ./PERTBD -f2 ./CONTROL -of SCREEN -s -n naminterp
+      echo "End check boundary $LLL"
+      echo
+    fi
+  fi
+
+  L=$(( L + PERTDIA_BDINT ))
+
+done
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

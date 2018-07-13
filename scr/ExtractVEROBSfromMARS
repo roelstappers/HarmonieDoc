@@ -1,0 +1,76 @@
+#!/bin/bash
+#|==========================================================================|#
+#|									    |#
+#|  script:                                                                 |#
+#|           ExtractOBSfromMARS                                             |#
+#|  purpose:                                                                |#
+#|           Extract observations between two times from MARS               |#
+#|  method:                                                                 |#
+#|           Construct and execute a MARS retrieval command based on        |#
+#|           the following date/time information:                           |#
+#|           DATE1 - First (earlier) date boundary of request               |#
+#|           TIME1 - Lower (earlier) time boundary for DATE1                |#
+#|           TIME2 - Upper (later)   time boundary for DATE1                |#
+#|           DATE2 - Last  (later)   date boundary of request               |#
+#|           TIME3 - Lower (earlier) time boundary for DATE2                |#
+#|           TIME4 - Upper (later)   time boundary for DATE2                |#
+#|           it is assumed that (DATE1:TIME1-TIME2) is contiguous with      |#
+#|           (DATE2:TIME3-TIME4). The reason to pass the time interval      |#
+#|           in two parts is to be able to cross a date boundary.           |#
+#|  variables:                                                              |#
+#|           OB    - Full title of file to contain observations             |#
+#|           DATE1, DATE2, TIME1, TIME2, TIME3 and TIME4; see above.        |#
+#|  author:                                                                 |#
+#|           Toon Moene (KNMI).                                             |#
+#|==========================================================================|#
+
+#========== ExtractOBSfromMARS: get observations from MARS, but only at ECMWF
+OB=$1
+DATE1=$2
+TIME1=$3
+TIME2=$4
+DATE2=$5
+TIME3=$6
+TIME4=$7
+
+#NORTHEC=80
+#SOUTHEC=40
+#WESTEC=-15
+#EASTEC=60
+
+
+testvar=blaha
+echo "variabler=$OB  $DATE1 $DATE2 $TIME1 $TIME2 $TIME3  $TIME4  $testvar"
+
+
+      if [ ! "$TIME2" ]; then time=$TIME1; else time=${TIME1}/TO/${TIME2}; fi
+      cat <<end-of-retrin >retrin
+RETRIEVE,
+      REPRES   = BUFR,
+      TYPE     = OB,
+      OBSTYPE=CONVENTIONAL,
+      DATE     = $DATE1,
+      TIME     = $time,
+      AREA     = $NORTHEC/$WESTEC/$SOUTHEC/$EASTEC,
+      TARGET   = "$OB"
+end-of-retrin
+      if [ "$DATE2" ]
+      then
+         if [ ! "$TIME4" ]; then time=$TIME3; else time=${TIME3}/TO/${TIME4}; fi
+         cat <<end-of-retrin >>retrin
+RETRIEVE,
+      REPRES   = BUFR,
+      TYPE     = OB,
+      OBSTYPE=CONVENTIONAL,
+      DATE     = $DATE2,
+      TIME     = $time,
+      AREA     = $NORTHEC/$WESTEC/$SOUTHEC/$EASTEC,
+      TARGET   = "$OB"
+end-of-retrin
+      fi
+      echo END >>retrin
+      mars retrin || \
+        { echo "ExtractVEROBSfromMARS: OB=$OB DATE1=$DATE1 TIME1=$TIME1 \
+               TIME2=$TIME2 DATE2=$DATE2 TIME3=$TIME3 TIME4=$TIME4 failed"; \
+		exit; }
+      rm retrin

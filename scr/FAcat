@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# FAcat
+if [ $# -lt 2 ]; then
+  echo "USAGE: $0 LL type"
+  echo "   or: $0 input-files output-file"
+  exit 1
+fi
+if [ $# -eq 2 ]; then
+  ret=0
+  grep "#FAcat#${1}#${2}#" $REGFILE > /dev/null || ret=1
+
+  if [ $ret -eq 1 ] ; then
+
+   #Get the hour and type
+   L4=`perl -e "printf('%4.4i', '$1')"`
+   TYPE=$2
+   FATYPE=$2
+   [[ $FATYPE == sfxf ]] && FATYPE=sfx
+
+   FILES=$( cat $WRK/FAcat_${L4}_${TYPE} )
+   for F in $FILES ; do
+     FILEOUT=$F
+   done
+
+  else 
+   echo "FAcat for length:$1 type:$2 is already done"
+  fi
+
+else
+  ret=1
+  # Output file
+  FILEOUT=\${$#}
+  FILEOUT=`eval echo $FILEOUT`
+
+  # Get the input files
+  I=2
+  FILESIN=""
+  while [ $I -lt $# ] ; do
+    FILEIN=\${$I}
+    FILEIN=`eval echo $FILEIN`
+    FILESIN="$FILESIN $FILEIN"
+    I=$(( $I + 1 ))
+  done
+  FILES="$FILESIN $FILEOUT"
+  FATYPE=$TYPE
+fi
+
+if [ $ret -eq 1 ] ; then
+
+ [ -f $FILEOUT ] && rm $FILEOUT
+ $MPPEXEC $BINDIR/lfitools facat $FATYPE $FILES || exit 
+
+ if [ $# -eq 2 ]; then
+  echo "#FAcat#${1}#${TYPE}#" >> $REGFILE
+ fi
+fi

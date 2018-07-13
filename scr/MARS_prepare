@@ -1,0 +1,203 @@
+#!/bin/bash
+#
+# Call MARS to prefetch/stage boundary data for the current date
+#
+# 1. Call Boundary_strategy.pl to generate boundary strategy files for the period
+# 2. Call Get_bdtimes.pl to generate requests for the missing files
+# 3. Call MARS to retrieve/stage the missing files.
+#
+
+function slaf_strat () {
+
+ # Generate list for the SLAF boundary files
+ SSDTG=$DTG
+ SSLL=$LL
+
+ # Determine the right LL from HH
+ HH=$( mandtg -hour $SSDTG )
+ LL=$( HH2LL.pl $HH )
+
+ # First SLAF file
+ DTG=$( mandtg $DTG + -$SLAFLAG )
+ LL=$(( $LL + $SLAFLAG ))
+ export LLSHIFT=$SLAFLAG
+
+ Boundary_strategy.pl >> $LWRK/bdstrat_$MODE
+
+ # Second SLAF file
+ DTG=$( mandtg $DTG + $SLAFDIFF )
+ LL=$(( $LL - $SLAFDIFF ))
+ export LLSHIFT=$(( $SLAFLAG - $SLAFDIFF ))
+
+ Boundary_strategy.pl >> $LWRK/bdstrat_$MODE
+
+
+ DTG=$SSDTG
+ LL=$SSLL
+ unset LLSHIFT
+
+}
+
+# Mode is STAGE or PREFETCH
+
+MODE=$1
+
+[ $MODE == "STAGE" -o $MODE == "PREFETCH" ] || { exit "Unknown MODE $MODE for MARS_prefetch" ; exit 1 ; }
+
+HH=$( mandtg -hour $DTG ) 
+MAXDIFF=$(( 24 - 10#$HH ))
+SDTG=$DTG
+DIFF=0
+LWRK=$WRK
+LARCHIVE=$ARCHIVE
+LCLIMDIR=$CLIMDIR
+LBDDIR=$BDDIR
+LINT_BDFILE=$INT_BDFILE
+LINT_SINI_FILE=${INT_SINI_FILE}
+USE_CLIMDIR=${CLIMDIR}
+LENSMSELX=$ENSMSELX
+
+rm -f $WRK/bdstrat_$MODE $WRK/mars_${MODE}*
+
+cd $WRK
+
+# Loop over all dates and all ensemble members
+# And create boundary strategy files for the 
+# current cycle or coming day.
+#
+
+LOOP=0
+while [ $LOOP -eq 0 ] ; do
+
+ if [ "$ENSMSEL" == "" ] ; then
+   Boundary_strategy.pl >> $WRK/bdstrat_$MODE
+ else
+
+   ENSMBRS=$( echo $ENSMSELX | sed 's/:/ /g' )
+
+   for ENSMBR in $ENSMBRS ; do
+
+     ARCHIVE=${LARCHIVE}
+     BDDIR=${LBDDIR}
+     CLIMDIR=${LCLIMDIR}
+     if [ -s $HM_LIB/sms/config_mbr$ENSMBR.h ] ; then
+       source $HM_LIB/sms/config_exp.h
+       source $HM_LIB/sms/config_mbr$ENSMBR.h
+       USE_CLIMDIR=${CLIMDIR}
+     else
+       [[ "$ENS_BD_CLUSTER" == yes ]] || { echo "Could not find and config file for $ENSMBR" ; exit 1 ; }
+     fi
+
+     WRK=$LWRK/mbr$ENSMBR
+     INT_BDFILE=${LINT_BDFILE}mbr$ENSMBR
+     INT_SINI_FILE=${LINT_SINI_FILE}mbr$ENSMBR
+     LL=$( HH2LL.pl $HH )
+     export LL
+
+     Boundary_strategy.pl >> $LWRK/bdstrat_$MODE
+
+     # Generate the SLAF strategy if requested
+     [[ $SLAFLAG -gt 0 ]] && slaf_strat
+
+   done
+ fi
+
+ LOOP=1
+
+done
+
+ARCHIVE=$LARCHIVE
+WRK=$LWRK
+BDDIR=$LBDDIR
+INT_BDFILE=$LINT_BDFILE
+INT_SINI_FILE=$LINT_SINI_FILE
+ENSMSELX=$LENSMSELX
+
+#
+# Create a list of fields we need to stage
+# and call mars if any field is missing
+#
+CLIMDIR=$USE_CLIMDIR
+
+[[ -s $WRK/bdstrat_$MODE ]] && { Get_bdtimes.pl $WRK/bdstrat_$MODE $WRK/mars_$MODE $MODE || exit 1 ; }
+
+CLIMDIR=$LCLIMDIR
+
+sleep 1
+
+if [ -s $WRK/mars_$MODE ] ; then
+
+  #
+  # Sort the requests and make sure we do not call MARS more than
+  # once for every unique request
+  #
+
+  echo "Call MARS to fetch missing files"
+
+  Cat_logs $WRK/mars_$MODE
+
+  cd $WRK
+
+  corrupt=1
+  tries=1
+  while [ $corrupt -eq 1 -a $tries -le 1 ] ; do
+
+   corrupt=0
+   rm -fr mars.* mars_prefetch_* script.* ${MODE}_*
+
+   pp_marsreq.pl < $WRK/mars_$MODE
+
+   TASKS=""
+   for REQ in $( find . -maxdepth 1 -name "mars.*" ) ; do
+
+    k=$( echo $REQ | cut -d"." -f3 )
+    script=script.$k
+    kdir=${MODE}_${k}
+
+cat>$script<<EOF
+#!/bin/bash
+MARS_MULTITARGET_STRICT_FORMAT=1
+export MARS_MULTITARGET_STRICT_FORMAT
+
+mkdir -p $kdir ; cd $kdir
+cp ../mars.$k .
+cp ../script.$k .
+mars ./mars.$k > script.out 2>&1 || \
+{ echo "Request stream $kdir failed" ; cat script.out ; exit 1 ; }
+
+echo "Request stream $kdir is complete"
+cat script.out
+echo "======================================"
+
+EOF
+
+    TASKS="$TASKS -n 1 ./$script :"
+    chmod 755 $script
+
+   done
+
+   TASKS=$( echo "$TASKS" | sed "s/:$//" )
+   echo TASKS=$TASKS
+
+   module load cray-snplauncher
+   mpiexec $TASKS || corrupt=1
+ 
+   grep tape ${MODE}_?/script.out ${MODE}_??/script.out 2>/dev/null
+   
+   if [ $MODE != "STAGE" ] ; then
+    for F in $( ls -1 mars_prefetch_* ) ; do
+     grib_count $F 1>foo || { echo "Found a corrupt file:$F, retry retrieval" ; corrupt=1 ; break ; }
+    done
+
+    tries=$(( tries + 1 ))
+   fi 
+
+ done
+
+else
+
+ echo "All MARS files available, no $MODE launched"
+
+fi
+
+trap 0

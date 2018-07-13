@@ -1,0 +1,43 @@
+#!/bin/bash
+# 
+# Archive output
+#
+
+. header.sh
+
+
+cd $WRK || exit
+
+# 
+# Archive the forecast
+# 
+
+OUTLIST=$( perl -S Output_freq.pl OUTLIST )
+for MLL in $OUTLIST; do
+  FFFF=`perl -e "printf('%4.4i', '$MLL')"`
+done
+
+if [ $SIMULATION_TYPE == "climate" ] ; then
+   # Create pointer to the first guess of next month
+   ln -sf $ARCHIVE/ICMSH${CNMEXP}+$FFFF $ARCHIVE/next_first_guess
+fi
+
+if [ $SURFACE = "surfex" ] ; then
+  SFXLIST=$( perl -S Output_freq.pl SFXLIST )
+  for MLL in $SFXLIST; do
+    FFFF=`perl -e "printf('%4.4i', '$MLL')"`
+  done
+
+  if [ $SIMULATION_TYPE == "climate" ] ; then
+     # Create pointers for the next climate cycle 
+     if [ "$SURFEX_OUTPUT_FORMAT" == "lfi" ]; then
+     ln -sf $ARCHIVE/AROMOUT_.$FFFF.lfi $ARCHIVE/next_first_guess_sfx
+     else
+       ln -sf $ARCHIVE/ICMSH${CNMEXP}+$FFFF.sfx $ARCHIVE/next_first_guess_sfx
+     fi
+  fi
+
+fi
+
+trap 0
+exit

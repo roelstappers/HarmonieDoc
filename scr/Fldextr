@@ -1,0 +1,209 @@
+#!/bin/bash
+
+set -x 
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+function create_namelist {
+cat > fldextr.dat << EOF
+ &NAMFLD
+  MODEL  = $MYMODEL,
+  EXP    = '$VFLDEXP',
+  NLEV_T = 10,
+  PRES_T = 925.,850.,700.,500.,400.,
+           300.,200.,150.,100., 50.,
+  LAND_LIMIT = -1.
+  IS_ANALYSIS=$IS_ANALYSIS,
+  INPUT_FORMAT='$INPUT_FORMAT',
+ /
+EOF
+}
+
+# Set the forecast range
+if [ "$TFLAG" == "min" ]; then
+   if [ "$TSTEP" -gt "0" ]; then
+      MAXFCL=$(( $LL * 3600  / $TSTEP ))
+   else
+     echo "ERROR: $0: TSTEP is not > 0"
+     exit 
+   fi
+else
+  MAXFCL=$LL
+fi
+# Check whether fldver should be performed for this time step
+if [ "$1" ]; then
+  N=$1
+else
+  N=`echo $SMSPARENT | perl -ne 'print $1 if (/(\d+)$/);'`
+fi
+SHOULD_DO=1
+# Check if N has a value
+if [ "$N" == "" ]; then
+  echo "WARNING: No argument is given to the script $0!"
+  echo "and no meaningful argument was extracted from \$SMSPARENT"
+  exit 
+# Check if N is inside forecast scope
+elif [ "$N" -lt "0" ] || [ "$N" -gt "$MAXFCL" ]; then
+   echo "WARNING: The argument to be used for verification is outside the forecast range"
+  SHOULD_DO=0
+else
+  # Check if this timestep is in the list that should be processed if we have hourly values
+  VERILIST=$( perl -S Output_freq.pl VL_TS $N)
+  if [ "$VERILIST" == "" ]; then
+    echo "No entries for output hour $N are found in \$VERITIMES."
+    echo "    \$VERITIMES: $VERITIMES"
+    echo "        \$TFLAG: $TFLAG"
+    echo "        \$TSTEP: $TSTEP"
+  SHOULD_DO=0
+  fi
+fi
+
+# Do not try to extract analysis vfld files if no analysis
+is_coldstart=$( cat $WRK/is_coldstart )
+SHOULD_DO_AN=1
+if [ $ANAATMO == "none" -a $ANASURF == "none" ] ; then
+  SHOULD_DO_AN=0
+else
+  if [ $is_coldstart = "yes" -a $N -eq 0 ] ; then
+    SHOULD_DO_AN=0
+  fi
+  if [ -s $WRK/var_oper.dat -a $RUNNING_MODE == "operational" -a $N -eq 0 ] ; then
+    echo $( date +"%Y-%m-%d %T" ) DTG=${DTG}: >> $HM_DATA/severe_warnings.txt
+    echo "Not enough observations for assimilation. No file produced for Run_fldver!" >>  $HM_DATA/severe_warnings.txt
+    SHOULD_DO_AN=0
+  fi
+fi
+
+# Determine experiment name, may be different in case of an ensemble run
+VFLDEXP=${VFLDEXP-$EXP}
+
+# Ready to continue with the verification
+if [ "$SHOULD_DO" != "1" ]; then
+  echo "... Skipping Run_fldver for step $N ..."
+else
+
+
+ for vv in $VERILIST; do
+
+  if [[ $PHYSICS = "arome" ]] ; then
+    MYMODEL=3
+  elif [[ $PHYSICS = "alaro" ]] ; then
+    MYMODEL=1
+  else
+    echo "no such flag"
+    exit
+  fi
+
+
+  # Link the station lists
+  ln -fs $HM_LIB/util/gl_grib_api/scr/allsynop.list  synop.list
+  ln -fs $HM_LIB/util/gl_grib_api/scr/alltemp.list   temp.list 
+
+  INPUT_FORMAT="FA"
+
+  II=`perl -e "printf('%4.4i', '$vv')"`
+  I3=`perl -e "printf('%3.3i', '$vv')"`
+  export IS_ANALYSIS=.FALSE.
+  if [ $N -eq 0 ] ; then
+
+     # At step 0 we first extract the 0h forecast
+     ln -sf $ARCHIVE/ICMSH${CNMEXP}+$II fort.10
+
+     create_namelist
+     $MPPGL $BINDIR/fldextr_grib_api || exit
+     mv vfld* ../.
+     rm -f fort.*
+
+     if [ "$SHOULD_DO_AN" == "0" ] ; then
+
+      # No more action for this timestep
+      continue
+
+     elif [ "$ANAATMO" == "4DVAR" ] ; then
+        # 4DVAR
+        IS_ANALYSIS=.TRUE.
+        if [ "$ANASURF_MODE" == "before" ] ; then 
+           ln -fs $ARCHIVE/an fort.10
+        elif [ "$ANASURF_MODE" == "after" ] ; then
+           ln -fs $ARCHIVE/ICMSHANAL+0000 fort.10
+        elif [ "$ANASURF_MODE" == "both" ] ; then
+           ln -fs $ARCHIVE/ICMSHANAL+0000_2 fort.10
+        else
+           echo "ANASURF_MODE=$ANASURF_MODE is not coded in Run_fldver"
+           exit 1
+        fi
+     elif [ "$ANAATMO" == "3DVAR" -o "$ANASURF" != "none" ] ; then
+
+        # 3DVAR and/or surface assimilation
+        IS_ANALYSIS=.TRUE.
+        if [ -s $ARCHIVE/ANAB1999+0000 ] ; then
+          ln -s $ARCHIVE/ANAB1999+0000 fort.10
+           if [ -s $ARCHIVE/ICMSHANAL+0000 ] ; then
+             ln -s $ARCHIVE/ICMSHANAL+0000 fort.11
+             [[ $NPATCH > 1 ]] && ln -s $ARCHIVE/ICMSHANAL+0000.sfx fort.12
+           fi
+        else
+           if [ -s $ARCHIVE/ICMSHANAL+0000 ] ; then
+             ln -s $ARCHIVE/ICMSHANAL+0000 fort.10
+             [[ $NPATCH > 1 ]] && ln -s $ARCHIVE/ICMSHANAL+0000.sfx fort.11
+           fi
+        fi
+     else 
+
+      # Why did we end up here?
+      exit 1
+
+     fi
+
+  else
+
+     # Forecast step > 0
+     if [ -s $ARCHIVE/ICMSH${CNMEXP}+$II ] ; then
+       ln -sf $ARCHIVE/ICMSH${CNMEXP}+${II} fort.10
+       # SURFEX results are not needed for verification unless NPATCH>1
+       [[ $NPATCH > 1 ]] && [[ -s $ARCHIVE/ICMSH${CNMEXP}+${II}.sfx ]] && \
+       ln -sf $ARCHIVE/ICMSH${CNMEXP}+$II.sfx fort.11
+     elif [ -s $ARCHIVE/PF${CNMEXP}${DOMAIN}+$II ] ; then
+       ln -sf $ARCHIVE/PF${CNMEXP}${DOMAIN}+$II fort.10
+       MM=$( mandtg -month $DTG )
+       ln -sf $CLIMDIR/m${MM} fort.11
+       [[ $NPATCH > 1 ]] && [[ -s $ARCHIVE/ICMSH${CNMEXP}+${II}.sfx ]] && \
+       ln -sf $ARCHIVE/ICMSH${CNMEXP}+$II.sfx fort.12
+     elif [ -s $ARCHIVE/fc${DTG}+${I3}grib_fp ] ; then
+       ln -sf $ARCHIVE/fc${DTG}+${I3}grib_fp fort.10
+       MM=$( mandtg -month $DTG )
+       if [ ! -s $CLIMDIR/m${MM}.grib ] ; then
+        echo "Create climate grib file" 
+cat > namclimgl << EOF
+&naminterp
+  READKEY%FANAME='SPECSURFGEOPOTEN','SURFIND.TERREMER',
+/
+EOF
+        $MPPGL $BINDIR/gl_grib_api -n namclimgl -p $CLIMDIR/m${MM} -o $CLIMDIR/m${MM}.grib -igd 
+       fi
+       ln -sf $CLIMDIR/m${MM}.grib fort.11
+       INPUT_FORMAT="GRIB"
+     else
+       echo "Could not find any verification file for this forecast length: $II"
+       exit 1
+     fi
+
+  fi
+
+  create_namelist
+  $MPPGL $BINDIR/fldextr_grib_api || exit
+
+  mv vfld* ../.
+ done
+fi
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

@@ -1,0 +1,81 @@
+#!/bin/bash
+#
+# Copy GNSS coefficients from -3h and -6h and merge with a -24h file from
+# which we take coefficients for other instruments ( like AMSU )
+#
+# Magnus Lindskog, SMHI, 2015
+#
+# FILE1:  -3h file
+# FILE2:  -6h file
+# FILE3: -24h file
+#
+
+
+FILE1=VARBC.cycle.1
+FILE2=VARBC.cycle.2
+FILE3=VARBC.cycle.3
+
+stations=`awk '{print $1}' whitelist.dat `
+
+cp $FILE3 VARBC.cycle.tmp
+
+echo ''
+echo '*****************************************'
+echo '**** MERGING OF GNSS VARBC FILE INFO ****'
+echo '*****************************************'
+echo ''
+
+for statid in $stations
+do
+
+ LNR1a=$(grep -n statid="${statid}" "${FILE1}" | awk -F: '{print $1+4}')
+ LNR1b=$(grep -n statid="${statid}" "${FILE1}" | awk -F: '{print $1+5}')
+ LNR2a=$(grep -n statid="${statid}" "${FILE2}" | awk -F: '{print $1+4}')
+ LNR2b=$(grep -n statid="${statid}" "${FILE2}" | awk -F: '{print $1+5}')
+ LNR3a=$(grep -n statid="${statid}" "${FILE3}" | awk -F: '{print $1+4}')
+ LNR3b=$(grep -n statid="${statid}" "${FILE3}" | awk -F: '{print $1+5}')
+
+ llboth=1
+
+ aa=${LNR1a:=0}
+ bb=${LNR2a:=0}
+ cc=${LNR3a:=0}
+
+ if [ $aa -lt 1 ] ; then
+  llboth=0
+ fi
+
+ if [ $bb -lt 1 ] ; then
+  llboth=0
+ fi
+
+ if [ $cc -lt 1 ] ; then
+  llboth=0
+ fi
+
+ if [ $llboth -gt 0 ] ; then
+
+  echo 'GNSS station id: ',$statid, 'merged'
+
+  EXPR1a=$(awk NR=="$LNR1a" "${FILE1}" | sed "s/=/ /" | awk '{print $2}')
+  EXPR1b=$(awk NR=="$LNR1b" "${FILE1}" | sed "s/=/ /" | awk '{print $2}')
+  EXPR2a=$(awk NR=="$LNR2a" "${FILE2}" | sed "s/=/ /" | awk '{print $2}')
+  EXPR2b=$(awk NR=="$LNR2b" "${FILE2}" | sed "s/=/ /" | awk '{print $2}')
+  EXPR3a=$(awk NR=="$LNR3a" "${FILE3}" | sed "s/=/ /" | awk '{print $2}')
+  EXPR3b=$(awk NR=="$LNR3b" "${FILE3}" | sed "s/=/ /" | awk '{print $2}')
+
+  sed " ${LNR3a} s/${EXPR3a}/${EXPR2b}/g " VARBC.cycle.tmp > VARBC.cycle.out
+  sed " ${LNR3b} s/${EXPR3b}/${EXPR1b}/g " VARBC.cycle.out > VARBC.cycle.tmp
+
+ else
+
+  echo 'GNSS station id: ',$statid, 'not merged'
+
+ fi
+
+done
+
+cp VARBC.cycle.tmp VARBC.cycle.out
+rm VARBC.cycle.tmp
+
+exit

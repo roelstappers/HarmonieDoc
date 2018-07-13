@@ -1,0 +1,225 @@
+#!/bin/bash
+
+#
+# Extract data for field verification
+#
+
+. header.sh
+. functions.ksh
+
+function fetch_file {
+ if [ ! -s $1 ]; then
+  F=$( basename $1 )
+  adir=$( ArchDir $AR_EXP $YYYY $MM $DD $HH )
+  Access_lpfs -from $adir/$F $1 || echo "Could not find $1"
+ fi
+ echo ""
+}
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+FORCE=yes
+unset ARCHIVE
+
+while getopts a:d:f: opt; do
+   case $opt in
+      a) ARCHIVE=$OPTARG ;;
+      d)     DTG=$OPTARG ;;
+      f)  FORCE=$OPTARG  ;;
+   esac
+done
+
+# The following variables are exported from outside
+
+echo ---------------------------------------------------
+echo "The following variables are exported from outside"
+echo "WRK            $WRK"
+echo "HM_DATA        $HM_DATA   or "
+echo "HL_DATA        $HL_DATA"
+echo "BINDIR         $BINDIR"
+echo "POST           $POST"
+echo "FLDVER_HOURS   $FLDVER_HOURS"
+echo ---------------------------------------------------
+
+#
+# Extract data for field verification and analysis increment
+#
+
+YYYY=$( mandtg -year  $DTG )
+  MM=$( mandtg -month $DTG )
+  DD=$( mandtg -day   $DTG )
+  HH=$( mandtg -hour  $DTG )
+
+
+#----------------------------------------------------------------------------
+
+# 1. HARMONIE files and namelists to be defined
+# ---------------------------------------------
+
+# Change the definition of ARCHIVE to match this DTG
+
+if [ ! "$HM_DATA" = "" ] ; then
+   ARCHIVE=${ARCHIVE-`ArchDir $ARCHIVE_ROOT $YYYY $MM $DD $HH`}
+   [[ -s $ARCHIVE ]] || { $MKDIR $ARCHIVE ; echo "Recreate $ARCHIVE" ; }
+   SFC_FILE=$ARCHIVE/ICMSHANAL+0000
+    AN_FILE=$ARCHIVE/ANAB1999+0000
+    FC_FILE=$ARCHIVE/ICMSH${CNMEXP}+0@LLL@
+   FILE_FLAG="-f -p"
+   AR_EXP=${HM_EXP:-$ARCHIVE_ROOT}
+
+# Create namelist for Harmonie
+
+   cat > namefld << EOF
+&naminterp
+ readkey%shortname = 'pres','t',
+ readkey%level     = 000,002,
+ readkey%levtype   = 'heightAboveGround','heightAboveGround',
+/
+EOF
+
+   cat > namefld_an << EOF
+&naminterp
+ readkey%shortname = 'pres',
+ readkey%level     = 000,
+ readkey%levtype   = 'heightAboveGround',
+/
+EOF
+
+   cat > namefld_sfc << EOF
+&naminterp
+ readkey%shortname = 't',
+ readkey%level     = 002,
+ readkey%levtype   = 'heightAboveGround',
+/
+EOF
+
+#----------------------------------------------------------------------------
+
+# 2. HIRLAM files and namelists to be defined
+# -------------------------------------------
+
+elif [ ! "$HL_DATA" = "" ] ; then
+   CYCLE_DIR=$YYYY$MM${DD}_$HH
+   ARCHIVE=$HL_DATA/$CYCLE_DIR
+   AR_EXP=$HL_EXP
+   [[ -s $ARCHIVE ]] || { echo "$ARCHIVE does not exist, exit" ; exit 1 ; } 
+   SFC_FILE=NOT_EXISTENT
+    AN_FILE=$ARCHIVE/an${YYYY}${MM}${DD}_${HH}+000$POST
+    FC_FILE=$ARCHIVE/fc${YYYY}${MM}${DD}_${HH}+@LLL@$POST
+  FILE_FLAG=""
+
+   # By default Hirlam verifies postpreocessed ve-file
+   # define the variables and levels from ve-files
+   # create the namelist files
+
+   if [ $POST = ve ]; then
+       line1=" readkey%ppp = 001,001,011,061,066,033,034,017,052,071,065, "
+       line2=" readkey%lll = 000,000,002,000,000,010,010,002,002,000,000, "
+       line3=" readkey%ttt = 103,105,105,105,105,105,105,105,105,105,105, "
+       line4=" pppkey%ppp = 031,032, "
+       line5=" pppkey%lll = 010,010, "
+       line6=" pppkey%ttt = 105,105, "
+
+       fldver_pars="006  011  052  033  034"
+       fldver_levels="100  200  300  500  700  850  925"
+       for par in $fldver_pars;   do
+       for lev in $fldver_levels; do
+	   line1="${line1}$par,"
+	   line2="${line2}$lev,"
+	   line3="${line3}100,"
+       done
+       done
+       fldver_pars="031  032"
+       for par in $fldver_pars;   do
+       for lev in $fldver_levels; do
+	   line4="${line4}$par,"
+	   line5="${line5}$lev,"
+	   line6="${line6}100,"
+       done
+       done
+       cat > namefld << EOF
+ &naminterp
+ `echo $line1`
+ `echo $line2`
+ `echo $line3`
+ `echo $line4`
+ `echo $line5`
+ `echo $line6`
+ $NAMLIS_E
+EOF
+
+cat > namefld_an << EOF
+ &naminterp
+ `echo $line1`
+ `echo $line2`
+ `echo $line3`
+ `echo $line4`
+ `echo $line5`
+ `echo $line6`
+ $NAMLIS_E
+EOF
+
+   else
+      echo " Only ve-files are defined for filed verification at the moment"
+      exit 1
+   fi
+
+#----------------------------------------------------------------------------
+
+# 3. Neither HIRLAM or HARMONIE defined
+# --------------------------------------
+
+
+else
+   echo "Error finding out HIRLAM or HARMONIE"
+   exit 1
+fi
+ 
+#----------------------------------------------------------------------------
+
+# 4. Run gl to pick up files for filed verification.
+#    Also run gl to create the statistics of every field in file
+#---------------------------------------------------------------
+
+
+#  3.1 Analysis
+
+if [ $FORCE = "yes" -o ! -s $ARCHIVE/fld_an_${DTG}+000$POST ] ; then
+
+   fetch_file $AN_FILE
+   [[ -s $AN_FILE ]] && \
+   $MPPGL $BINDIR/gl_grib_api $FILE_FLAG -n namefld_an   $AN_FILE -o fld_an_${DTG}+000$POST
+
+   if [ -s $SFC_FILE ] ; then
+      $MPPGL $BINDIR/gl_grib_api $FILE_FLAG -n namefld_sfc $SFC_FILE -o sfc_file
+      cat sfc_file >> fld_an_${DTG}+000$POST
+   fi 
+
+fi
+
+# Forecasts
+for LL in $FLDVER_HOURS ; do
+
+   LLL=`perl -e "printf('%3.3i', '$LL')"` 
+
+   if [ $FORCE = "yes" -o ! -s $ARCHIVE/fld_fc_${DTG}+${LLL}$POST ] ; then
+      FILE=$( echo $FC_FILE | sed "s/@LLL@/$LLL/g" )
+      fetch_file $FILE
+      if [ -s $FILE ] ; then
+         $MPPGL $BINDIR/gl_grib_api $FILE_FLAG -n namefld -o fld_fc_${DTG}+${LLL}$POST $FILE
+      fi 
+   fi 
+
+done
+
+mv fld_* $ARCHIVE || true
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

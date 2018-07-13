@@ -1,0 +1,277 @@
+#!/bin/bash
+#
+set -xv
+#
+#####################################################################################
+# Create HarmonEPS boundary files from IFS boundary data copied from ECFS
+#####################################################################################
+# Andrew Singleton, MET Norway, 2016
+#####################################################################################
+#
+# Usage: ECFS_getbd_mbr -k KK -d DATE -h HH -l LL
+#
+# -d DATE
+#    YYYYMMDD for boundary model
+#
+# -h HH
+#    Cycle for boundary model
+#
+# -l LL
+#    lead time for boundary model
+#
+# -k KK
+#    lead time for forecast model
+#
+#####################################################################################
+#
+# Get the command options
+#
+  DATE=UNDEFINED
+  HH=UNDEFINED
+  LL=UNDEFINED
+  KK=UNDEFINED
+  BASE=UNDEFINED
+#
+  while getopts d:h:l:k:b: opt; do
+    case $opt in
+      d) DATE=$OPTARG ;;
+      h)   HH=$OPTARG ;;
+      l)   LL=$OPTARG ;;
+      k)   KK=$OPTARG ;;
+      b)   BASE=$OPTARG ;;
+    esac
+  done
+#
+  if [ $DATE == UNDEFINED -o $HH == UNDEFINED -o $LL == UNDEFINED -o $KK == UNDEFINED -o $BASE == UNDEFINED ]; then
+    echo "Usage: $0 -d DATE -h HOUR -l LL -k KK -b BASE"
+    echo "Your usage $0 -d $DATE -h $HH -l $LL -k $KK -b $BASE"
+    exit 1
+  fi
+  HH=`perl -e "printf('%2.2i', '$HH')"`
+  HH4=${HH}00
+ #
+  dtgBoundary=${DATE}${HH}
+  echo "dtgBoundary is $dtgBoundary"
+  YY=$( mandtg -year $dtgBoundary )
+  MM=$( mandtg -month $dtgBoundary )
+  DD=$( mandtg -day $dtgBoundary )
+#
+###########################################
+# Set directory- and file-names
+###########################################
+#
+# directory for unpacked boundary data for the member
+# (i.e. where the boundary files used by the model are placed)
+# and the filnames (excluding the leadtime)
+#
+  #mbrBoundaryDir=$HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbr${ENSMBR}
+  #mbrBoundaryFile=fc$YY$MM${DD}_$HH
+  mbrBoundaryDir=$( dirname $BASE )
+  mbrBoundaryFile=$( basename $BASE | cut -d"+" -f1 )
+  mbrBoundaryFileStatic=${mbrBoundaryFile}_staticData
+#
+# working directory and filename for the untar'd files from ECFS
+#
+  workBoundaryDir=$HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbrALL
+  allMembersBoundaryFile=G1E$MM$DD$HH4
+#
+#######################################################################################
+# Check for boundary files for each lead time and extract if it does not exist
+#######################################################################################
+#
+  boundaryLead=$LL
+#
+  boundaryLead3=`perl -e "printf('%03d', '${boundaryLead}')"` # 3 digit lead time
+  mbrBoundaryFileLead=${mbrBoundaryDir}/${mbrBoundaryFile}+${boundaryLead3}
+  mbrBoundaryFileLeadStatic=${mbrBoundaryDir}/staticData_${mbrBoundaryFile}+${boundaryLead3}
+#
+# if the file exists print message otherwise run grib_filter
+#
+  if [ -f ${mbrBoundaryFileLead} ] ; then
+#
+    echo "${mbrBoundaryFileLead} ---> EXISTS"
+#
+  else
+#
+    echo "Getting data for ${mbrBoundaryFileLead}"
+#
+#   Get the validity time for this lead time
+#
+    dtgBoundaryLead=`mandtg $dtgBoundary + $boundaryLead`
+    echo "dtgBoundaryLead is ${dtgBoundaryLead}"
+    validYY=$( mandtg -year $dtgBoundaryLead )
+    validMM=$( mandtg -month $dtgBoundaryLead )
+    validDD=$( mandtg -day $dtgBoundaryLead )
+    validHH=$( mandtg -hour $dtgBoundaryLead )
+    validHH4=${validHH}00
+#
+    allMembersBoundaryFile0000=${workBoundaryDir}/${allMembersBoundaryFile}${MM}${DD}${HH4}1 # for static data
+    allMembersBoundaryFileLead=${workBoundaryDir}/${allMembersBoundaryFile}${validMM}${validDD}${validHH4}1
+#
+#   Double check that the allMembers files exist - abort if not found
+#
+    if [ ! -f "${allMembersBoundaryFileLead}" ] ; then
+#
+      echo "ERROR: ${allMembersBoundaryFileLead} NOT FOUND"
+      echo "Cannot continue with no boundary data"
+      exit 1
+#
+    fi
+#
+    if [ ! -f "${allMembersBoundaryFile0000}" ] ; then
+#
+      echo "ERROR: ${allMembersBoundaryFileLead} NOT FOUND"
+      echo "Cannot continue with no orography data"
+      exit 1
+#
+    fi
+#
+#   if there is no static data (SST, sea-ice, orography, lsm) for this member, extract from
+#   allMembersBoundaryFile0000 
+#
+    if [ ! -f "${mbrBoundaryDir}/${mbrBoundaryFileStatic}" ] ; then
+#
+#     generate rules file for grib_filter for getting static data
+#
+      rulesFile=$HM_LIB/scr/EPS_static_filter_mbr${ENSMBR}_$dtgBoundary_$LL
+      cat > $rulesFile <<EOF
+################################################################################################
+## grib_filter rules file for extracting boudary data for member $ENSMBR at lead time ${boundaryLead}h
+################################################################################################
+#
+# Exract orography, sea ice, land-sea mask and sst
+#
+  if (perturbationNumber == $ENSBDMBR && stepRange == 0) {
+#
+    if ( (paramId == 129 && typeOfLevel is "hybrid" && level == 1) || (shortName is "ci" || shortName is "sst" ||
+shortName is "lsm" ) ) {
+#
+      if ( hour < 10 ) {
+        print "writing [shortName] for leveltype=[typeOfLevel] level=[level] to fc[date]_0[hour]_staticData";
+        write "fc[date]_0[hour]_staticData";
+      } else {
+        print "writing [shortName] for leveltype=[typeOfLevel] level=[level] to fc[date]_0[hour]_staticData";
+        write "fc[date]_[hour]_staticData";
+      }
+#
+    }
+#
+  }
+#
+##############################################################################################
+##############################################################################################
+EOF
+#
+#     Run grib_filter to get the static data
+#
+      mkdir -p $mbrBoundaryDir
+      cd $mbrBoundaryDir
+      echo "splitting static data from ${allMembersBoundaryFile0000} into ${mbrBoundaryFileStatic}"
+      grib_filter $rulesFile ${allMembersBoundaryFile0000}
+      rm -f $rulesFile
+#
+#     Check that the file was created
+#
+      if [ ! -f ${mbrBoundaryFileStatic} ] ; then
+#
+        echo "ERROR: grib_filter did not create ${mbrBoundaryFileStatic}"
+        exit 1
+#
+      fi
+#
+    fi # end if block to get static data
+#
+#   generate rules file for grib_filter for getting boundary data
+#
+    rulesFile=$HM_LIB/scr/EPS_bnd_filter_mbr${ENSMBR}_$dtgBoundary_$LL
+    cat > $rulesFile  <<EOF
+################################################################################################
+## grib_filter rules file for extracting boudary data for member $ENSMBR at lead time ${boundaryLead}h
+################################################################################################
+#
+# Exract orography, sea ice, land-sea mask and sst
+#
+  if (perturbationNumber == $ENSBDMBR && stepRange == $boundaryLead) {
+#
+    if ( (paramId == 129 && typeOfLevel is "hybrid" && level == 1) || (shortName is "ci" || shortName is "sst" ||
+shortName is "lsm" ) ) {
+#
+      print "skipping [shortName] for leveltype=[typeOfLevel] level=[level]";
+      write "extras";
+#
+    } else {
+#
+#     ignore max/min/gust fields 
+#
+      if ( shortName is "10fg" || shortName is "mx2t" || shortName is "mn2t" ) {
+#
+        print "skipping [shortName] for leveltype=[typeOfLevel] level=[level]";
+        write "extras";
+#
+      } else {
+#
+#       write fields to file for esemble member and lead time
+#
+        if ( stepRange < 10 ) {
+          if ( hour < 10 ) {
+            print "writing [shortName] for leveltype=[typeOfLevel] level=[level] to fc[date]_0[hour]+00[stepRange] for member [perturbationNumber]";
+            write "fc[date]_0[hour]+00[stepRange]";
+          } else {
+            print "writing [shortName] for leveltype=[typeOfLevel] level=[level] to fc[date]_[hour]+00[stepRange] for member [perturbationNumber]";
+            write "fc[date]_[hour]+00[stepRange]";
+          }
+        } else {
+          if ( hour < 10 ) {
+            print "writing [shortName] for leveltype=[typeOfLevel] level=[level] to fc[date]_0[hour]+0[stepRange] for member [perturbationNumber]";
+            write "fc[date]_0[hour]+0[stepRange]";
+          } else {
+            print "writing [shortName] for leveltype=[typeOfLevel] level=[level] to fc[date]_[hour]+0[stepRange] for member [perturbationNumber]";
+            write "fc[date]_[hour]+0[stepRange]";
+          }
+        }
+#
+      }
+#
+    }
+#
+  }
+##############################################################################################
+##############################################################################################
+EOF
+#
+#   make the boundary data directory, cd into it and filter the grib file for this lead time
+#   to get the member data
+#
+    mkdir -p $mbrBoundaryDir
+    cd $mbrBoundaryDir
+    echo "splitting data from ${allMembersBoundaryFileLead} into ${mbrBoundaryFileLead}"
+    grib_filter $rulesFile ${allMembersBoundaryFileLead}
+    rm -f $rulesFile
+# 
+#   Check that the file was created
+# 
+    if [ ! -f ${mbrBoundaryFileLead} ] ; then
+#
+      echo "ERROR: grib_filter did not create ${mbrBoundaryFileLead}"
+      exit 1
+#
+    fi
+#
+#   cat the staticData onto the file and remove the extras file
+#
+    cat ${mbrBoundaryFileLead} ${mbrBoundaryFileStatic} > ${mbrBoundaryFileLeadStatic}
+    mv ${mbrBoundaryFileLeadStatic} ${mbrBoundaryFileLead}
+    rm -f extras
+#
+  fi # end if for existence of extracted boundary file
+#
+#
+# final cleanup
+#
+
+trap - 0
+exit
+
+
+
+

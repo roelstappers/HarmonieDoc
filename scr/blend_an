@@ -1,0 +1,119 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+cd "$WRK"
+WDIR=$(hostname)$$
+Workdir "$WDIR"
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#Blendingfields ..
+
+loop=${1?"Loop number not given as input"}
+res=$( echo "$ILRES" | cut -d, -f"$loop" )
+
+#cp "$WRK"/ELSCFHARM_"${res}"x+0003 FILE1
+#cp "$WRK"/MXMINI999_"${res}"x+0000 FILE2
+#cp "$WRK"/MXMINI999_"${res}"x+0000 FILE3
+
+cp $WRK/MXMINI999_${res}x+0000 FILE1
+cp $WRK/ELSCFHARM_${res}x+0002 FILE2
+cp $WRK/MXMINI999_${res}x+0000 FILE3
+
+
+if [ "$PHYSICS" == "alaro" ]; then
+  # Fields to blend for alaro physics
+  cl_cvarb[1]='PROFTEMPERATURE '
+  cl_cvarb[2]='PROFRESERV.EAU  '
+  cl_cvarb[3]='SURFTEMPERATURE '
+  cl_cvarb[4]='SURFRESERV.EAU  '
+  cl_cvarb[5]='SURFRESERV.INTER'
+  cl_cvarb[6]='SURFRESERV.NEIGE'
+  cl_cvarb[7]='SURFRESERV.GLACE'
+  cl_cvarb[8]='PROFRESERV.GLACE'
+  cl_cvarb[9]='SURFDENSIT.NEIGE'
+  cl_cvarb[10]='SURFRES.EVAPOTRA'
+  cl_cvarb[11]='SURFALBEDO NEIGE'
+  cl_cvarb[12]='SURFALBEDO.SOLNU'
+  cl_cvarb[13]='SURFALBEDO.VEG'
+  if [ "$ANASURF" != "none" ]; then
+    cl_cvarb[14]='SURFALBEDO HISTO'
+    cl_cvarb[15]='CLSTEMPERATURE'
+    cl_cvarb[16]='CLSHUMI.RELATIVE'
+    cl_cvarb[17]='CLSVENT.ZONAL'
+    cl_cvarb[18]='CLSVENT.MERIDIEN'
+  fi 
+elif [ "$PHYSICS" == "aladin" ]; then
+  # Fields to blend for aladin physics
+  cl_cvarb[1]='PROFTEMPERATURE '
+  cl_cvarb[2]='PROFRESERV.EAU  '
+  cl_cvarb[3]='SURFTEMPERATURE '
+  cl_cvarb[4]='SURFRESERV.EAU  '
+  cl_cvarb[5]='SURFRESERV.INTER'
+  cl_cvarb[6]='SURFRESERV.NEIGE'
+  cl_cvarb[7]='SURFRESERV.GLACE'
+  cl_cvarb[8]='PROFRESERV.GLACE'
+  cl_cvarb[9]='SURFDENSIT.NEIGE'
+  cl_cvarb[10]='SURFRES.EVAPOTRA'
+  cl_cvarb[11]='SURFALBEDO NEIGE'
+  cl_cvarb[12]='SURFALBEDO.SOLNU'
+  cl_cvarb[13]='SURFALBEDO.VEG'
+  cl_cvarb[14]='SURFAEROS.SEA'
+  cl_cvarb[15]='SURFAEROS.LAND'
+  cl_cvarb[16]='SURFAEROS.SOOT'
+  cl_cvarb[17]='SURFAEROS.DESERT'
+  if [ "$ANASURF" != "none" ]; then
+    cl_cvarb[18]='SURFALBEDO HISTO'
+    cl_cvarb[19]='CLSTEMPERATURE'
+    cl_cvarb[20]='CLSHUMI.RELATIVE'
+    cl_cvarb[21]='CLSVENT.ZONAL'
+    cl_cvarb[22]='CLSVENT.MERIDIEN'
+  fi
+else
+  echo "Physics $PHYSICS not implemented"
+  exit 1
+fi
+
+
+# Create namelist
+i_nvarb=${#cl_varb[@]}
+cat > fort.4 <<EOF
+&NAMSCEN
+/
+&NAMDYNCORE
+/
+&namblendsur
+ CL_FNAME1='FILE1',
+ CL_FNAME2='FILE2', 
+ CL_FNAME3='FILE3', 
+ ZSIGNL=0.,
+ ZSIGNS=0.,
+ I_NVARB=$i_nvarb,
+EOF
+
+# Add namelist fields to blend
+var=1
+while [ "$var" -le "$i_nvarb" ]; do
+  echo "   CL_CVARB=${string[$var]}," >> fort.4
+  var=$(( var + 1 ))
+done
+
+# Close namelist
+cat >> fort.4 << EOF
+/ 
+EOF
+
+export DR_HOOK_NOT_MPI=1
+
+$MPPGL "$BINDIR"/BLENDSUR
+
+mv FILE3 ../MXMINI999_"${res}"b+0000 
+
+# Normal exit
+cd ..
+
+rm -fr "$WDIR"
+trap - 0
+exit

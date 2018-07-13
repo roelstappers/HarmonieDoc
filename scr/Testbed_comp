@@ -1,0 +1,421 @@
+#!/bin/bash
+
+# 
+# Use xtool to check the internal and cross test consistency
+# The -de flag tells xtool to fail if any difference is > zeps
+#
+
+# Order of magnitude for the tolerance
+TOLERANCE=-12
+
+function check_vfld {
+
+#
+# Compare vfld/vobs files
+#
+
+[[ -s $HM_DATA/vfld_comp ]] && rm -rf $HM_DATA/vfld_comp
+mkdir -p $HM_DATA/vfld_comp
+cd $HM_DATA/vfld_comp || exit 
+mkdir -p $EXP $EXP2
+
+cp $HM_DATA/archive_$CONF/extract/*.gz $EXP/.
+cd $EXP
+ls -1 *.gz | xargs -l1 tar -zxvf ; rm -f *.gz
+cd -
+
+cp $REFEXP/archive_$CONF/extract/*.gz $EXP2/.
+cd $EXP2
+ls -1 *.gz | xargs -l1 tar -zxvf ; rm -f *.gz
+cd -
+
+L=0
+K=0
+echo "  Compare vfld/vobs files" >> $LOGFILE_DETAILS
+
+for F1 in $( find $EXP -type f ) ; do
+ F2=$( echo $F1 | sed "s/$EXP/$EXP2/g" )
+ M1=$( md5sum $F1 | cut -d " " -f1)
+ M2=$( md5sum $F2 | cut -d " " -f1 )
+ TYPE=$( echo $F1 | xargs basename | cut -c1-4 )
+ L=$(( L + 1 ))
+ if [ $M1 == $M2 ] ; then
+  echo "  files are equal $F1 $F2" >> $LOGFILE_DETAILS
+ else
+  K=$(( K + 1 ))
+  KLOG=$ARCHIVE/${CONF}_${TYPE}.$K
+  echo "diff  $F1 $F2" > $KLOG
+  if [ -s $F2 ] ; then
+    diff  $F1 $F2 >> $KLOG
+  else
+    echo " $F2 does not exist" >> $KLOG
+  fi
+  echo "  files differ $F1 $F2" >> $LOGFILE_DETAILS
+  echo "   see $KLOG for details" >> $LOGFILE_DETAILS
+  FC=1
+ fi
+
+done
+
+echo >> $LOGFILE_DETAILS
+echo "  vfld/vobs file summary (differ/total) ${K}/${L}"  >> $LOGFILE_SUMMARY
+echo "  vfld/vobs file summary (differ/total) ${K}/${L}"  >> $LOGFILE_DETAILS
+
+}
+
+function check_internal {
+
+   F1=$1
+   F2=$2
+   [[ -s $F1 ]] || echo "  Missing own $F1" >> $LOGFILE_DETAILS
+   [[ -s $F2 ]] || echo "  Missing ref $F2" >> $LOGFILE_DETAILS
+
+   TIN=$(( TIN + 1 ))
+
+   if [ -s $F1 -a -s $F2 ] ; then
+
+     ln -sf $F1 ./F1
+     ln -sf $F2 ./F2
+     echo "Compare $F1 vs $F2" > $ARCHIVE/$LOG
+     echo "Compare $F1" >> $LOGFILE_DETAILS
+     echo "     vs $F2" >> $LOGFILE_DETAILS
+
+     ARGUMENTS=" -f -f1 ./F1 -f2 ./F2 -s -de -to $TOLERANCE -of SCREEN"
+     echo "Run:$BINDIR/xtool_grib_api $ARGUMENTS" >> $ARCHIVE/$LOG
+  
+     FAIL=0
+     $BINDIR/xtool_grib_api $ARGUMENTS >> $ARCHIVE/$LOG || FAIL=1 
+     if [ $FAIL -eq 1 ] ; then
+       echo "   Files differ (see $ARCHIVE/$LOG) "  >> $LOGFILE_DETAILS
+       FAIL_INTERNAL=$(( FAIL_INTERNAL + 1 ))
+     else
+       echo "   Files are equal"  >> $LOGFILE_DETAILS
+     fi
+     rm -f ./F1 ./F2
+
+   fi
+
+}
+
+# Set flags
+FAIL_CROSS=0
+FAIL_COMPARE=0
+FAIL_INTERNAL=0
+TIN=0
+TCR=0
+
+REV=`echo $EXP | awk 'BEGIN { FS = "_" } ; { print $NF }'`
+LOGFILE_DETAILS=$HM_DATA/testbed_comp_$REV.log_details
+LOGFILE_SUMMARY=$HM_DATA/testbed_comp_$REV.log_summary
+
+rm -f $LOGFILE_DETAILS $LOGFILE_SUMMARY
+
+if [ "$MAKEUP" == "yes" ]; then
+  METHOD="makeup"
+else
+  METHOD="gmkpack"
+fi
+
+echo "HARMONIE testbed results from $SMSHOST" > $LOGFILE_SUMMARY
+date >> $LOGFILE_SUMMARY
+echo >> $LOGFILE_SUMMARY
+echo "Configuration: $HARMONIE_CONFIG" >> $LOGFILE_SUMMARY
+echo " Build method: $METHOD" >> $LOGFILE_SUMMARY
+echo >> $LOGFILE_SUMMARY
+
+#
+# Create testbed archive
+#
+cd $HM_DATA
+ARCHIVE=$ARCHIVE_ROOT
+$MKDIR $ARCHIVE
+
+
+#
+# Find the last testbed run to compare with or use an experiment, REFEXP, given by the user
+#
+cd $HM_DATA/..
+EB=$( echo $EXP | perl -pe 's/(.*)_((\d){1,})\Z/$1/' )
+ls -1 | egrep "${EB}_([[:digit:]]{1,})\b" | grep -v child > foo$$
+N=$( egrep -n "\b${EXP}\b" foo$$ | perl -pe 's/(.*):(.*)/$1/' )
+[[ $N -gt 1 ]] && N=$(( $N - 1 ))
+REFDIR=$( dirname $HM_DATA )
+DEFAULT_REFEXP=$REFDIR/$( head -$N foo$$ | tail -1 )
+
+REFEXP=${REFEXP-$DEFAULT_REFEXP}
+EXP2=$( basename $REFEXP )
+
+if [ "$REFEXP" = "$HM_DATA" ]; then
+      echo "Not comparing $EXP against itself!"
+      rm -f foo$$
+      exit 1
+fi
+rm -f foo$$
+
+export LOGFILE_SUMMARY LOGFILE_DETAILS
+
+echo "Compare experiment $EXP and $EXP2" >> $LOGFILE_SUMMARY
+echo "Compare experiment $EXP and $EXP2" >> $LOGFILE_DETAILS
+echo >> $LOGFILE_SUMMARY
+echo >> $LOGFILE_DETAILS
+
+#
+# Loop over all configurations and compare the 6h forecasts with the previous changeset
+#
+
+for CONF in ecmwf_bd climate $TESTBED_LIST ; do
+
+  cd $HM_DATA
+
+  echo "Check:$CONF" >> $LOGFILE_SUMMARY
+  echo "Check:$CONF" >> $LOGFILE_DETAILS
+
+  SEARCHDIR=archive_$CONF
+  DO_VFLD=1
+  IGD=""
+  FILECHECKS="INTERNAL GRIB"
+  case $CONF in
+    AROME_EPS_COMP|AROME_CLIMSIM)
+      CNMEXP=HARM
+      IMAX=1
+      ;;
+    AROME_MUSC|ALARO_MUSC|ALARO_OLD_MUSC)
+      CNMEXP=MUSC
+      IMAX=2
+      ;;	
+    ALADIN_TLAD)
+      CNMEXP=HARM
+      IMAX=0
+      ;;	
+    ecmwf_bd)
+      SEARCHDIR=ECMWF
+      FILECHECKS="ecmwf_bd"
+      IMAX=1
+      DO_VFLD=0
+      IGD="-igd"
+      ;;	
+    climate)
+      SEARCHDIR=climate
+      FILECHECKS="climate"
+      IMAX=1
+      DO_VFLD=0
+      IGD="-igd"
+      ;;	
+    *)
+      CNMEXP=HARM
+      IMAX=2
+      ;;	
+  esac
+
+  TCR=$(( TCR + 1 ))
+  FC=0
+   I=0
+
+  for FILECHECK in $FILECHECKS ; do
+  
+   J=0
+   K=0
+   INC=1
+
+   case $FILECHECK in
+    ecmwf_bd)
+
+     CHECKLIST=$( find $SEARCHDIR -name "fc*" )
+     INC=2
+     filetype="grib"
+
+    ;;
+    climate)
+     cl=$( find $SEARCHDIR -name "m??" )
+     clsfx=$( find $SEARCHDIR -name "Const.Clim.sfx" )
+     pgd=$( find $SEARCHDIR -name "PGD*.lfi" )
+
+     CHECKLIST="$cl $clsfx $pgd"
+     filetype="internal"
+
+    ;;
+    INTERNAL)
+     bd=$( find $SEARCHDIR -name "ELSCF*" )
+     sa=$( find $SEARCHDIR -name "ICMSHANAL*" )
+     ua=$( find $SEARCHDIR -name "*1999+*" )
+     sfxi=$( find $SEARCHDIR -name "SURFXINI.fa" )
+     fc=$( find $SEARCHDIR -name "ICMSH${CNMEXP}+????" )
+     fcs=$( find $SEARCHDIR -name "ICMSH*.sfx" )
+     fp6=$( find $SEARCHDIR -name "PF*6" )
+     fp0=$( find $SEARCHDIR -name "PF*0" )
+  
+     CHECKLIST="$bd $sa $ua $sfxi $fc $fcs $fp0 $fp6"
+     filetype="internal"
+
+    ;;
+    GRIB)
+
+     CHECKLIST=$( find $SEARCHDIR -name "fc*???grib*" )
+     filetype="grib"
+
+    ;;
+   esac
+   
+   L=0
+   for F1 in $CHECKLIST ; do
+
+    
+    F2=$REFEXP/$F1
+    F1=$HM_DATA/$F1
+
+    if [ -s $F1 -a -s $F2 ] ; then
+
+      L=$(( L + 1 ))
+      [[ $(( L % INC )) -ne 0 ]] && continue
+  
+      LOG=$( echo $CONF | sed 's/archive_//' )
+      I=$(( I + 1 ))
+      ln -sf $F1 ./F1
+      ln -sf $F2 ./F2
+      echo Compare $F1 vs $F2 > $ARCHIVE/$LOG.$I
+      echo "  Compare $F1" >> $LOGFILE_DETAILS
+      echo "       vs $F2" >> $LOGFILE_DETAILS
+      FAIL=0
+      FLAG="-f"
+      [[ $F1 =~ '.lfi' ]] && FLAG="-l"
+      [[ $F1 =~ '.sfx' ]] && FLAG="-f -igs"
+      [[ $F1 =~ '_sfx' ]] && FLAG="-igs"
+
+      [[ $filetype == "grib" ]] && FLAG=""
+      
+
+      ARGUMENTS="$FLAG -f1 ./F1 -f2 ./F2 $IGD -s -de -to $TOLERANCE -of SCREEN"
+      echo "Run: $BINDIR/xtool_grib_api $ARGUMENTS" >> $ARCHIVE/$LOG.$I
+
+      $BINDIR/xtool_grib_api $ARGUMENTS >> $ARCHIVE/$LOG.$I || FAIL=1 
+      if [ $FAIL -eq 1 ] ; then
+        echo "   Files differ (see $ARCHIVE/$LOG.$I) "  >> $LOGFILE_DETAILS
+        FC=1
+        K=$(( K + 1 ))
+      else
+        echo "   Files are equal"  >> $LOGFILE_DETAILS
+      fi
+ 
+      rm -f ./F1 ./F2
+ 
+    else
+
+      [[ -s $F1 ]] || echo "  Missing own $F1" >> $LOGFILE_DETAILS
+      [[ -s $F2 ]] || echo "  Missing ref $F2" >> $LOGFILE_DETAILS
+      J=$(( J + 1 ))
+
+    fi
+
+   done
+   echo "  Output $filetype file summary (differ/missing/total) ${K}/${J}/${I}"  >> $LOGFILE_SUMMARY
+   echo "  Output $filetype file summary (differ/missing/total) ${K}/${J}/${I}"  >> $LOGFILE_DETAILS
+
+  done 
+
+  # Compare vfld files
+  [[ $DO_VFLD -eq 1 ]] && check_vfld
+
+  [[ $FC -gt 0 ]] && FAIL_CROSS=$(( FAIL_CROSS + 1 ))
+
+  if [ $I -lt $IMAX ] ; then
+    FAIL_COMPARE=$(( FAIL_COMPARE + 1 ))
+    echo "  No comparison done for:$CONF " >> $LOGFILE_DETAILS
+  else
+    echo >> $LOGFILE_DETAILS
+    if [ $FC -gt 0 ] ; then
+      echo " Configuration $CONF differs" >> $LOGFILE_DETAILS
+      echo " Configuration $CONF differs" >> $LOGFILE_SUMMARY
+    else
+      echo " Configuration $CONF is equal" >> $LOGFILE_DETAILS
+      echo " Configuration $CONF is equal" >> $LOGFILE_SUMMARY
+    fi
+    echo "  " >> $LOGFILE_DETAILS
+  fi
+  echo >> $LOGFILE_DETAILS
+  echo >> $LOGFILE_SUMMARY
+
+done
+
+
+#
+# Use xtool to compare the result of different configurations
+# that are expected to be equal
+#
+ echo "" >> $LOGFILE_DETAILS
+ echo "Check the internal consistency" >> $LOGFILE_DETAILS
+ echo "" >> $LOGFILE_DETAILS
+
+ # Compare EPS and EPS_COMP
+
+ for I in  1 ; do
+  case $I in
+
+   1)
+    EXP1=AROME_EPS_COMP
+    EXP2=HarmonEPS
+    MBR=mbr000
+    ;;
+   *)
+    echo "No handle for this internal check"
+    exit 1
+    ;;
+  esac
+
+ echo "Compare $EXP2 $MBR with deterministic forecast from $EXP1" >> $LOGFILE_DETAILS
+ I=0
+ cd $HM_DATA
+ for F1 in $( find archive_${EXP1} -name "ICMSHHARM*6" ) ; do
+   F2=$( echo $F1 | sed "s/$EXP1/$EXP2/" | sed "s/ICMSH/$MBR\/ICMSH/" )
+   I=$(( I + 1 ))
+   LOG=${EXP1}_vs_${EXP2}.$I
+   check_internal $F1 $F2
+   echo >> $LOGFILE_DETAILS
+  done
+ done
+
+
+ # Compare AROME and AROME_1D
+
+ for CONF in AROME ALARO ; do
+
+   EXP1=$CONF
+   EXP2=${CONF}_1D
+   echo "Compare $EXP1 and $EXP2" >> $LOGFILE_DETAILS
+
+   I=0
+   for F1 in $( find archive_${EXP1} -name "ICMSHHARM*6" ) ; do
+     F2=$( echo $F1 | sed "s/$EXP1/$EXP2/" )
+     I=$(( $I + 1 ))
+     LOG=${EXP1}_vs_${EXP2}.$I
+     check_internal $F1 $F2
+     echo >> $LOGFILE_DETAILS
+   done
+
+ done 
+
+ # Send the logfile to hirlam.org
+ echo "Testbed comparison complete" >> $LOGFILE_SUMMARY
+
+ STATUS="[ Status: OK ]"
+ [ $FAIL_COMPARE  -ge 1 ] && STATUS="[ Status: OK, BUT NO COMPARISON ($FAIL_COMPARE/$TCR) ]"
+ [ $FAIL_INTERNAL -ge 1 ] && STATUS="[ Status: FAILED ($FAIL_INTERNAL/$TIN))]"
+ [ $FAIL_CROSS    -ge 1 ] && STATUS="[ Status: DIFFER ($FAIL_CROSS/$TCR)]"
+ [ $FAIL_INTERNAL -ge 1 ] && [ $FAIL_CROSS -ge 1 ] && STATUS="[ Status: FAILED ($FAIL_INTERNAL/$TIN) and DIFFER ($FAIL_CROSS/$TCR) ]"
+
+ echo >> $LOGFILE_SUMMARY
+ echo $STATUS >> $LOGFILE_SUMMARY
+
+ Cat_logs $LOGFILE_SUMMARY $LOGFILE_DETAILS
+
+ cat  $LOGFILE_SUMMARY > foo
+ cat >> foo << EOF
+
+ For more details please check $LOGFILE_DETAILS
+
+ EOF
+
+ # Revision assumed to be *_rev-number of EXP name
+ mail -s "Testbed $SMSHOST:$HARMONIE_CONFIG ($EXP built with $METHOD) $STATUS" testbed@hirlam.org < foo
+
+ # Fail if any of the internal tests failed
+ #[[ $FAIL_INTERNAL -eq 0 ]] || exit 1 

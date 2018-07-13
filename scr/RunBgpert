@@ -1,0 +1,209 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+d_MINIM=$WRK/$WDIR
+
+set -vx
+
+#-----------------------------------------------------------------------
+# Upper air analysis - 3DVAR (configuration 131 of ALADIN model)
+#-----------------------------------------------------------------------
+# Inputs:
+#
+#   #--first guess (the same file with 5  different names):  
+#     ICMSHMIN1INIT  ICMSHMIN1IMIN  ICMRFMIN10000   
+#     ELSCFMIN1ALBC000 ELSCFMIN1ALBC     
+#
+#   #--Input/output (CCMA) ODB directory structure, containing only 
+#      the active observations:
+#     ${d_DB}/CCMA
+#            /CCMA.${base1}
+#            ....
+#
+#   #--Constants and statistics   
+#     (1)rszcoef_fmt (2)rt_coef_atovs_newpred_ieee.dat , etc.
+#     (3)stabal96.cv (4)stabal96.bal
+#
+# Outputs:
+#   #--Upper air analysis (MXMIN1999+0000) under the name of POS2
+#   #--The minimization (update) information will be put into the 
+#      input (CCMA) ODB.
+#-----------------------------------------------------------
+#   Globals: d_STATFILES,d_CST,d_ASSIM,NBPROC,d_CCMA
+#-----------------------------------------------------------
+
+	#-- Get Environmental variables
+        . include.ass
+
+        #--- Get Local vars
+	typeset d_DB namel
+	d_DB_MINIM=$WRK/odb_ccma
+
+
+	#-- enter the working dir
+	cd ${d_MINIM}
+
+#--- background error stat
+ln -sf ${HM_LIB}/const/jb_data/$f_JBCV  stabal96.cv
+ln -sf ${HM_LIB}/const/jb_data/$f_JBBAL stabal96.bal
+ echo "ENSSIZE=$ENSSIZE"
+
+ NBGVECS=`expr $ENSSIZE - 1`
+ LBGPERT=.TRUE.
+ LPERTRELAX=.TRUE.
+ DELTA=1.
+ echo "NBGVECS=$NBGVECS"
+ echo "LBGPERT=$LBGPERT"
+
+#--- fetching the guess
+cp ${WRK}/first_guess ./ICMSHMIN1INIT
+
+if [ ! -f ./ICMSHMIN1INIT ] ; then
+  echo "Sorry, no first-guess!!!"
+  exit 1
+fi
+
+ln -sf ICMSHMIN1INIT ICMSHMIN1IMIN
+ln -sf ICMSHMIN1INIT ICMRFMIN10000
+ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC000
+ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC
+
+    mbr=1
+    if [ ${NBGVECS} -gt 0 ]; then
+     while [ ${mbr} -le ${NBGVECS} ]; do
+      mmm=`perl -e "printf \"%03d\",$mbr"`
+      cp ${WRK}/../mbr${mmm}/very_first_guess ./ICMSHMIN1I${mmm}
+      ln -sf ICMSHMIN1I${mmm} ICMSHMIN1IBDP${mmm}
+      ln -sf ICMSHMIN1I${mmm} ICMRFMIN10${mmm}
+      mbr=`expr $mbr + 1`
+     done
+
+    fi 
+
+
+#--- fetching consts
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+#--- fetching consts
+cp ${HM_LIB}/const/bias_corr/var.amv* .
+cp ${HM_LIB}/const/bias_corr/rszcoef_fmt	rszcoef_fmt
+cp ${HM_LIB}/const/bias_corr/cstlim_noaa.dat  cstlim_noaa.dat
+
+#--- RADIOSONDE BIAS CORRECTION
+for tabfile in table1 table2 table3;do
+  cp ${HM_LIB}/const/bias_corr/$tabfile .
+done
+
+ LVARBC=.FALSE.
+
+if [ $LVARBC = "T" ]; then
+
+  BEG_DIFF=`mandtg $DTG - $DTGBEG`
+
+  [[ -s $WRK/VARBC.cycle ]] || \
+  { echo "You don t have VARBC table from the earlier run \
+    please check the content of your WORKDIR " ; exit 1 ; }
+   
+  ln -s $WRK/VARBC.cycle  ./VARBC.cycle
+
+fi
+
+# RTTOV
+ln -sf ${HM_SAT_CONST}/* .
+ln -sf ./rtcoef_metop_2_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_2_iasi.dat
+echo "DTG=$DTG"
+echo "DTGBEG=$DTGBEG"
+echo "d_DB_MINIM=${d_DB_MINIM}"
+
+if [[ ! -d ${d_DB_MINIM} ]]; then
+  echo "${d_DB_MINIM} does not exists !"
+  exit
+fi
+
+
+
+	#--- check odb
+#	CheckDir ${d_DB_MINIM}
+
+	#--- ODB settings for 3dvar
+	export ODB_CMA=CCMA
+	export ODB_SRCPATH_CCMA=${d_DB_MINIM}/CCMA
+	export ODB_DATAPATH_CCMA=${d_DB_MINIM}/CCMA
+	export IOASSIGN=${d_DB_MINIM}/CCMA/IOASSIGN
+
+ echo "${ODB_CMA}"
+ echo "${ODB_SRCPATH_CCMA}"
+ echo "${ODB_DATAPATH_CCMA}"
+ echo "${IOASSIGN}"
+
+    #--- ODB Debug
+    if [ $ODB_VERBOSE_OUT -eq 1 ];then
+         export ODB_TRACE_PROC=-1
+         export ODB_TRACE_FILE=${d_MINIM}/trace.%d
+         export ODB_TRACE_FLUSH_FREQ=1
+         export DR_HOOK=1
+    fi
+	#--- namelist
+        NAMELIST=$WRK/$WDIR/namelist
+        Get_namelist minimization $NAMELIST
+	sed -e "s/NBPROC/${NPROC}/g"   \
+	    -e "s/NPROCX/${NPROCX}/g"  \
+	    -e "s/NPROCY/${NPROCY}/g"  \
+        -e "s/NREDNMC/${REDNMC}/"  \
+        -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+        -e "s/NCONF=NCONF/NCONF=131/g" \
+        -e "s/CNMEXP=CNMEXP/CNMEXP=\"MIN1\"/g" \
+        -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+        -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+        -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+        -e "s/NBGVECS=NBGVECS/NBGVECS=${NBGVECS}/g"  \
+        -e "s/LBGPERT=LBGPERT/LBGPERT=${LBGPERT}/g"  \
+        -e "s/DELTA=DELTA/DELTA=${DELTA}/g"  \
+        -e "s/LPERTRELAX=LPERTRELAX/LPERTRELAX=${LPERTRELAX}/g"  \
+        -e "s/LVARBC=LVARBC/LVARBC=$LVARBC/"  \
+	    $NAMELIST > fort.4 || \
+        { echo "Sorry, no namelist!" ; exit 1 ; }
+
+    Cat_logs fort.4
+
+    $MPPEXEC $BINDIR/$MODEL || exit
+
+    Cat_logs NODE.001_01
+    Cat_logs NODE.012_01
+    Cat_logs NODE.071_01
+
+    [[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+    mbr=1 
+    if [ "${NBGVECS}" -gt "0" ]; then
+     while [ "${mbr}" -le "${NBGVECS}" ]; do
+       mmm=`perl -e "printf \"%03d\",$mbr"`
+       echo "archive to $ARCHIVE/../mbr$mmm/MXMIN1999+0000"
+       mv MXMIN1${mmm}+0000 $ARCHIVE/../mbr$mmm/MXMIN1999+0000
+       echo "$WRK/../mbr$mmm/fc_start"
+       ln -sf $ARCHIVE/../mbr$mmm/MXMIN1999+0000 $WRK/../mbr$mmm/fc_start
+       mbr=`expr $mbr + 1`
+     done
+    fi
+
+
+    if [ $LVARBC == "T" ]; then
+       #--- save VARBC tables
+       cp -f VARBC.cycle $ARCHIVE/.
+    fi
+
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

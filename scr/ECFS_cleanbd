@@ -1,0 +1,73 @@
+#!/bin/bash
+#
+set -xv
+#
+#####################################################################################
+# Clean disk of boundary data extracted from ECFS
+#####################################################################################
+# Andrew Singleton, MET Norway, 2016
+#####################################################################################
+#
+# Find DTG for boundary data for current forecast and boundary data
+# for the next forecast. If the next forecast requires new boundaries
+# delete the mbrAll directory for the current forecast.
+#
+# Boundary date for current forecast
+#
+  HH=$( mandtg -hour $DTG )
+  H=$((10#$HH))
+  if [ $H -ge 00 -a $H -lt 06 ] ; then
+    let offset=12+$H
+  elif [ $H -ge 06 -a $H -lt 18 ] ; then
+    let offset=$H
+  elif [ $H -ge 18 -a $H -lt 24 ] ; then
+    let offset=$H-12
+  fi
+  dtgBoundaryCurrent=`mandtg $DTG + -$offset`
+#
+  YY=$( mandtg -year $dtgBoundaryCurrent )
+  MM=$( mandtg -month $dtgBoundaryCurrent )
+  DD=$( mandtg -day $dtgBoundaryCurrent )
+  HH=$( mandtg -hour $dtgBoundaryCurrent )
+#
+# working directory with data copied from ECFS and untar'd
+#
+  workBoundaryDir=$HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbrALL
+#
+# Boundary date for next forecast
+#
+  dtgNextLead=`mandtg $DTG + $FCINT`
+#
+  HH=$( mandtg -hour $dtgNextLead )
+  H=$((10#$HH))
+  if [ $H -ge 00 -a $H -lt 06 ] ; then
+    let offset=12+$H
+  elif [ $H -ge 06 -a $H -lt 18 ] ; then
+    let offset=$H
+  elif [ $H -ge 18 -a $H -lt 24 ] ; then
+    let offset=$H-12
+  fi
+# 
+  echo "dtgNextLead is ${dtgNextLead}"
+  dtgBoundaryNext=`mandtg $dtgNextLead + -$offset`
+#
+  echo "dtgBoundaryCurrent is ${dtgBoundaryCurrent}. dtgBoundaryNext is ${dtgBoundaryNext}"
+#
+  if [ $dtgBoundaryNext -gt $dtgBoundaryCurrent ] ; then
+#
+    echo "Deleting data from ${workBoundaryDir}"
+    rm -rf ${workBoundaryDir}
+#
+  else 
+#
+    echo "Keeping data in ${workBoundaryDir} for next forecast"
+#
+  fi
+#
+# final cleanup
+#
+
+trap - 0
+exit
+
+

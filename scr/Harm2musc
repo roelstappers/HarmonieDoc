@@ -1,0 +1,260 @@
+#!/bin/bash
+
+set -x 
+
+#
+# A script (template) to extract atmospheric and surface input for MUSC
+# from HARMONIE AROME files by using gl_grib_api 
+#
+# Prepare boundaries from HIRLAM/ECMWF to ALADIN
+# Arguments :
+# d  Input directory 
+# o  Output directory 
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#
+
+
+export DR_HOOK=0
+INDIR=""
+OUTDIR=$WRK
+
+while getopts d:o: opt; do
+  case $opt in
+    d)      INDIR=$OPTARG  ;;
+    o)      OUTDIR=$OPTARG  ;;
+  esac
+done
+
+# Location and grid size
+LAT=$LAT0
+LON=$LON0
+DLON=$GSIZE
+DLAT=$GSIZE
+
+# Output files
+MUSCATM=MUSC.atm
+MUSCSFX=MUSC.sfx
+MUSCPGD=MUSC_Const.Clim.sfx
+
+case $PHYSICS in
+  "arome")
+    spectralq=0
+  ;;
+  *)
+    spectralq=1
+  ;;
+esac
+
+# Namelist for atmospheric file
+cat > naminterp_atm <<EOF
+&NAMINTERP
+  OUTPUT_FORMAT     = 'MUSC_FORCING_FA',
+  OUTGEO%NLON       =   1 ,
+  OUTGEO%NLAT       =   1,
+  OUTGEO%NLEV       =  -1,
+  OUTGEO%DLON       =   $GSIZE,
+  OUTGEO%DLAT       =   $GSIZE,
+  OUTGEO%NLAT       =   1,
+  OUTGEO%GRIDTYPE =   'regular_ll',
+  ORDER             = 0
+  LINTERP_FIELD     = F,
+  GPLAT          = $LAT0,
+  GPLON          = $LON0,
+  READKEY(1:14)%faname='SPECSURFGEOPOTEN', 'SURFPRESSION',
+                       'SNNNWIND.U.PHYS',  'SNNNWIND.V.PHYS',
+                       'SNNNTEMPERATURE',  'SNNNHUMI.SPECIFI',
+                       'SNNNPRESS.DEPART', 'SNNNVERTIC.DIVER'
+                       'SNNNLIQUID_WATER', 'SNNNSOLID_WATER',
+                       'SNNNSNOW',         'SNNNRAIN',
+                       'SNNNGRAUPEL',      'SNNNTKE',
+  READKEY(1:14)%level  = 000,000,
+                       -1,-1,
+                       -1,-1,
+                       -1,-1,
+                       -1,-1,
+                       -1,-1,
+                       -1,-1,
+  READKEY(1:14)%levtype  = 'heightAboveGround','heightAboveGround',
+                       'hybrid','hybrid',
+                       'hybrid','hybrid',
+                       'hybrid','hybrid',
+                       'hybrid','hybrid',
+                       'hybrid','hybrid',
+                       'hybrid','hybrid',
+  READKEY(1:14)%nnn  =   1,  1,  1,  1,  1, 
+                         $spectralq,  1,  1,
+                         0,  0,  0,
+                         0,  0,  0,
+  PPPKEY(1:4)%shortname  = 'ws','#','#','#',
+  PPPKEY(1:4)%faname  = '#','SNNNFORC001','SNNNFORC002','SNNNFORC003'
+  PPPKEY(1:4)%levtype = 'hybrid','hybrid','hybrid','hybrid',
+  PPPKEY(1:4)%level   = -1,-1,-1,-1,
+  PPPKEY(1:4)%pid     = 32,-1,-1,-1,
+  PPPKEY(1:4)%nnn     = 0,0,0,0,
+  PPPKEY(1:4)%lwrite  = F,T,T,T,
+  IFORCE              = 11,51,32,
+EOF
+
+case $PHYSICS in
+
+ arome)
+cat >> naminterp_atm << EOF
+  READKEY(15:24)%faname  = 
+    'SURFAEROS.SEA   ',
+    'SURFAEROS.LAND  ',
+    'SURFAEROS.SOOT  ',
+    'SURFAEROS.DESERT',
+    'SURFA.OF.OZONE  ',
+    'SURFB.OF.OZONE  ',
+    'SURFC.OF.OZONE  ',
+    'SURFTEMPERATURE',
+    'SURFRESERV.NEIGE',
+    'SURFIND.TERREMER ',
+  READKEY(15:24)%nnn = 0,0,0,0,0,0,0,0,0,0,
+EOF
+ 
+ ;;
+ alaro)
+
+cat >> naminterp_atm << EOF
+  READKEY(15:49)%faname  = 
+    'SURFAEROS.SEA   ',
+    'SURFAEROS.LAND  ',
+    'SURFAEROS.SOOT  ',
+    'SURFAEROS.DESERT',
+    'SURFA.OF.OZONE  ',
+    'SURFB.OF.OZONE  ',
+    'SURFC.OF.OZONE  ',
+    'SURFTEMPERATURE',
+    'SURFRESERV.NEIGE',
+    'SURFIND.TERREMER ',
+    'PROFTEMPERATURE',
+    'PROFRESERV.EAU ',
+    'PROFRESERV.GLACE',
+    'SURFRESERV.INTER', 
+    'SURFRESERV.EAU',
+    'SURFRESERV.GLACE',
+    'SURFET.GEOPOTENT',  
+    'SURFPROP.VEGETAT',
+    'SURFVAR.GEOP.ANI', 
+    'SURFVAR.GEOP.DIR',
+    'SURFPROP.ARGILE',
+    'SURFPROP.SABLE',
+    'SURFEPAIS.SOL',
+    'SURFALBEDO',
+    'SURFALBEDO NEIGE',
+    'SURFDENSIT.NEIGE',
+    'SURFALBEDO.SOLNU',
+    'SURFALBEDO.VEG',
+    'SURFZ0.FOIS.G',
+    'SURFEMISSIVITE',
+    'SURFIND.VEG.DOMI',
+    'SURFRESI.STO.MIN',
+    'SURFIND.FOLIAIRE'
+    'SURFRES.EVAPOTRA'
+    'SURFGZ0.THERM',
+  READKEY(15:49)%nnn = 0,0,0,0,0,0,0,0,0,0,
+                       0,0,0,0,0,0,0,0,0,0,
+                       0,0,0,0,0,0,0,0,0,0,
+                       0,0,0,0,0,
+EOF
+ ;;
+ *)
+ ;;
+
+esac
+
+echo "/" >> naminterp_atm
+
+# Generate the initial and forcing file for the atmosphere with gl_grib_api
+
+Cat_logs naminterp_atm
+
+$BINDIR/gl_grib_api -l -n naminterp_atm $INDIR/ICMSHHARM+0006 -o $MUSCATM || exit
+
+
+MUSCLIST="$MUSCATM"
+
+
+# Generate the SURFEX initial file if applicable
+
+if [ $SURFACE == "surfex" ] ; then
+
+ if [ $SURFEX_INPUT_FORMAT != fa ] ; then
+  echo "SURFEX input in LFI is not supported "
+  exit 1
+ fi
+
+cat > naminterp_sfx <<EOF
+&NAMINTERP
+  OUTPUT_FORMAT     = 'MUSC_FORCING_FA',
+  OUTGEO%NLON       =   1 ,
+  OUTGEO%NLAT       =   1,
+  OUTGEO%NLEV       =  -1,
+  OUTGEO%DLON       =   $GSIZE,
+  OUTGEO%DLAT       =   $GSIZE,
+  OUTGEO%GRIDTYPE   =   'regular_ll',
+  OUTGEO%ARAKAWA    =  'A',
+  ORDER             =   0
+  LINTERP_FIELD     = F,
+  GPLAT          = $LAT0,
+  GPLON          = $LON0,
+/
+EOF
+
+  Cat_logs naminterp_sfx
+
+  # Create the initial surfex file
+  $BINDIR/gl_grib_api -l -n naminterp_sfx $INDIR/ICMSHHARM+0006.sfx -o $MUSCSFX || exit
+
+  # Create a 1D PGD file required for the forecast
+  $BINDIR/gl_grib_api -l -n naminterp_sfx $BDCLIM/Const.Clim.sfx -o $MUSCPGD || exit
+
+ MUSCLIST="$MUSCLIST $MUSCSFX $MUSCPGD"
+
+fi
+
+#
+# Generate MUSC_FA -> MUSC ASCII -> MUSC_FA to make sure this functionality always works
+#
+
+for F in $MUSCLIST ; do
+
+cat > naminterp_ascii << EOF
+&NAMINTERP
+  INPUT_FORMAT      = 'FA',
+  OUTPUT_FORMAT     = 'MUSC_ATM_ASCII',
+/
+EOF
+
+ $BINDIR/gl_grib_api -n naminterp_ascii $F -o $F.ascii -igd || exit
+
+cat > naminterp_ascii_2_fa << EOF
+&NAMINTERP
+  INPUT_FORMAT      = 'MUSC_ATM_ASCII',
+  OUTPUT_FORMAT     = 'MUSC_FORCING_FA',
+/
+EOF
+
+ $BINDIR/gl_grib_api -n naminterp_ascii_2_fa ${F}.ascii -o ${F}.ascii.fa -igd || exit
+
+done
+
+# Store and use the result
+cp MUSC* $ARCHIVE/
+mv MUSC* $WRK/.
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

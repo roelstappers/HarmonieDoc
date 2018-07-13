@@ -1,0 +1,399 @@
+# $Id: util.plib 4950 2007-02-16 15:05:33Z towil $
+# util.plib: utilities for HIRLAM perl programs
+# synopsis:
+# # requiring utilities
+# @INC = split(":",$ENV{PATH}); require("util.plib");
+# author: Gerard Cats, September 2000
+
+#===============================================================================
+# Environment
+#===============================================================================
+# cleaned away, Ole V., 11.11.2015
+
+#===============================================================================
+# Archives
+#===============================================================================
+
+sub dearchive{
+# dearchive: extract results of a cycle from the archive
+# synopsis: @FullFileTitles = dearchive($HM_EXP, $HM_DATA, $CYCLEDIR, @files) || die
+# method:
+# expect the files to have been stored in direcotry yyyy/mm/dd/hh
+# and forecast climate and error files (starting with cf and ef) in yyyy/mm/hh
+# where $CYCLEDIR points at a directory of the form YYYYMM_AN[/mbrNNN],
+# ie. a directory for monthly averages of forecasts starting at analysis time AN,
+# and eventuall with ensemble member subdirectory.
+# retrieved file=$HM_DATA/$CYCLEDIR/$file
+# author: Gerard Cats, 29 September 2000
+   my ($HM_EXP, $HM_DATA, $CYCLEDIR, @files) = @_;
+   local ($file, $tar, $full, @list);
+   Mkdir ("$HM_DATA/$CYCLEDIR",0750);
+   if ( ! -d "$HM_DATA/$CYCLEDIR" ) {
+      print STDERR "dearchive: could not make directory $HM_DATA/$CYCLEDIR\n";
+      return ();
+   }
+   my $subdir = $CYCLEDIR;
+   $subdir =~ s~(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(r?)~$1/$2/$3/$4$5~ ||
+   $subdir =~ s~(\d\d\d\d)(\d\d)_(\d\d)(r?)~$1/$2/$3$4~ ||
+   		( print( STDERR "dearchive: illegal CYCLEDIR $CYCLEDIR\n"), return () );
+   @list=();
+FILE: foreach $file (@files) {
+      $full = "$HM_DATA/$CYCLEDIR/$file";
+      ( push(@list, $full), next FILE ) if ( -f $full );
+      system("cd $HM_DATA/$CYCLEDIR; Access_lpfs -from $HM_EXP/$subdir/$file .");
+      if ( ! -f $full ) {
+         print STDERR "dearchive: $full not available, also not in archive $HM_EXP/$subdir\n";
+      } else {
+         print STDERR "dearchive: $full retrieved from archive $HM_EXP/$subdir\n";
+         push(@list, $full);
+      }
+   }
+   return @list;
+}
+#===============================================================================
+# Format definitions & conversions
+#===============================================================================
+
+# ------------------------------------------------------------------------------
+sub DTG2datetime{
+# DTG2datetime: convert DTG to date and time (yyyymmdd and hhmmss)
+# synopsis: ($Date,$Time) = DTG2datetime($DTG);
+# author: Gerard Cats, 22 September 2000
+   my $cyd=shift(@_);
+   return ($1,sprintf("%2.2d0000",$2)) if ( $cyd =~ /(^[0-9]{8})([0-9]{2}$)/ );
+   die "DTG2datetime: FATAL ERROR in DTG structure of CYCLEDIR ($cyd)\n";
+}
+# ------------------------------------------------------------------------------
+sub datetime2DTG{
+# datetime2DTG: construct DTG from date and time (yyyymmdd and hhmmss)
+# synopsis: $DTG = datetime2DTG($Date,$Time);
+# example: DTG 24 hours earlier is datetime2DTG(Newdatetime(DTG2datetime($DTG), -24*3600))
+# author: Gerard Cats, 22 September 2000
+   my $date=shift(@_);
+   my $time=shift(@_);
+   local $hh;
+   return sprintf("%8.8d%2.2d",$date, $hh)
+        if ( $date =~ /^[0-9]{8}$/ && $time =~ /^[0-9]*$/ && ($hh=$time/10000)==int($hh) );
+   die "datetime2DTG: FATAL ERROR in date/time specification ($date / $time)\n";
+}
+# ------------------------------------------------------------------------------
+sub CYCLEDIR2datetime{
+# CYCLEDIR2datetime: convert CYCLEDIR to date and time (yyyymmdd and hhmmss)
+# synopsis: ($Date,$Time) = CYCLEDIR2datetime($CYCLEDIR);
+# author: Gerard Cats, 22 September 2000
+   my $cyd=shift(@_);
+   return ($1,sprintf("%2.2d0000",$2)) if ( $cyd =~ /^([0-9]{8})_([0-9]{2})r?/ );
+   die "CYCLEDIR2datetime: FATAL ERROR in DTG structure of CYCLEDIR ($cyd)\n";
+}
+# ------------------------------------------------------------------------------
+sub CYCLEDATE2datetime{
+# CYCLEDATE2datetime: convert CYCLEDATE to date and time (yyyymmdd and hhmmss)
+# synopsis: ($Date,$Time) = CYCLEDATE2datetime($CYCLEDATE);
+   my $cyd=shift(@_);
+   return ($1,sprintf("%2.2d0000",$2)) if ( $cyd =~ /^([0-9]{8})_([0-9]{2})$/ );
+   die "CYCLEDATE2datetime: FATAL ERROR in date/time specification of CYCLEDIR ($cyd)\n";
+}
+# ------------------------------------------------------------------------------
+sub datetime2CYCLEDIR{
+# datetime2CYCLEDIR: construct CYCLEDIR from date and time (yyyymmdd and hhmmss)
+# synopsis: $CYCLEDIR = datetime2CYCLEDIR($Date,$Time[,$Suffix]);
+# author: Gerard Cats, 22 September 2000
+   my $date=shift(@_);
+   my $time=shift(@_);
+   my $suffix=shift(@_);
+   local $hh;
+   return sprintf("%8.8d_%2.2d%s",$date, $hh, $suffix)
+        if ( $date =~ /^[0-9]{8}$/ && $time =~ /^[0-9]*$/ && ($hh=$time/10000)==int($hh) );
+   die "datetime2CYCLEDIR: FATAL ERROR in date/time specification ($date / $time)\n";
+}
+# ------------------------------------------------------------------------------
+sub Date2Ymd{
+# Date2Ymd: convert Date to year (yyyy), month (mm) and day (dd)
+# synopsis: ($Year,$Month, $Day) = Date2Ymd($Date);
+# author: Ben Wichers Schreur, 15 October 2001
+   my $date=shift(@_);
+   return (sprintf("%4.4d",$1),sprintf("%2.2d",$2),sprintf("%2.2d",$3)) if ( $date =~ /(^[0-9]{4})([0-9]{2})([0-9]{2}$)/ );
+   return undef;
+}
+# ------------------------------------------------------------------------------
+sub seconds2hhmmss{
+# seconds2hhmmss: convert seconds since 00:00:00 to hhmmss
+# synopsis: $Time = seconds2hhmmss($Time);
+# author: Gerard Cats, 22 September 2000
+   my $oldt=shift(@_);
+   local( $s, $r, $m, $h);
+# convert time to seconds
+   $s=$oldt%60; $r=($oldt-$s)/60; $m=$r%60; $h=($r-$m)/60;
+   return $h*10000 + $m*100 + $s;
+}
+# ------------------------------------------------------------------------------
+sub hhmmss2seconds{
+# hhmmss2seconds: convert hhmmss to seconds since 00:00:00
+# synopsis: $Time = hhmmss2seconds($Time);
+# author: Gerard Cats, 22 September 2000
+   my $oldt=shift(@_);
+   local( $s, $r, $m, $h);
+# convert time to seconds
+   $s=$oldt%100; $r=($oldt-$s)/100; $m=$r%100; $h=($r-$m)/100;
+   return $h*3600 + $m*60 + $s;
+}
+
+#===============================================================================
+# DATE-TIME HANDLING
+#===============================================================================
+
+# ------------------------------------------------------------------------------
+sub Timedif{
+# Timedif: calculate time difference in seconds between two dates/times (hhmmss)
+# synopsis: ($NewDate,$NewTime) = Timedif($date1, $time1, $date2, $time2);
+#            positive if date/time1 is later than date/time2
+# dates in yyyymmdd, times in hhmmss, time difference in seconds
+# beware hhmmss=010000 is an octal number, use "010000" or 10000
+# author: Gerard Cats, 29 September 2000
+  my ($date1, $time1, $date2, $time2) = @_;
+  local $d;
+  if ($date1 == $date2) { $d = 0 } else { $d = idat2c($date1)-idat2c($date2) }
+  return $d * 86400 + hhmmss2seconds($time1) - hhmmss2seconds($time2);
+}
+# ------------------------------------------------------------------------------
+sub Newdatetime{
+# Newdatetime: calculate new date and time from old plus increment
+# synopsis: ($NewDate,$NewTime) = Newdatetime($olddate, $oldtime, $incr);
+# dates in yyyymmdd, times in hhmmss, incr in seconds
+# beware hhmmss=010000 is an octal number, use "010000" or 10000
+# author: Gerard Cats, 4 September 2000
+   my $oldd=shift(@_);
+   my $oldt=shift(@_);
+   my $incr=shift(@_);
+   local( $newt, $s, $r, $m, $h);
+# convert time to seconds
+   $s=$oldt%100; $r=($oldt-$s)/100; $m=$r%100; $h=($r-$m)/100;
+   $oldt = $h*3600 + $m*60 + $s;
+# get new time,  and increment in whole number of days
+   $newt = $oldt + $incr;
+   $oldt = $newt % 86400;
+   $incr=($newt-$oldt)/86400;
+# convert time to hhmmss
+   $s=$oldt%60; $r=($oldt-$s)/60; $m=$r%60; $h=($r-$m)/60;
+   $oldt = $h*10000 + $m*100 + $s;
+   return (Newdate( $oldd, $incr), sprintf("%6.6d",$oldt));
+}
+# ------------------------------------------------------------------------------
+sub Newdatetime_sec{
+# Newdatetime_sec: calculate new date and time from old plus increment
+# synopsis: ($NewDate,$NewTime) = Newdatetime_sec($olddate, $oldtime, $incr);
+# dates in yyyymmdd, times in seconds, incr in seconds
+# author: Gerard Cats, 4 September 2000
+   my $oldd=shift(@_);
+   my $oldt=shift(@_);
+   my $incr=shift(@_);
+   local( $newt);
+   $newt = $oldt + $incr;
+   $oldt = $newt % 86400;
+   $incr=($newt-$oldt)/86400;
+   return (Newdate( $oldd, $incr), $oldt);
+}
+# ------------------------------------------------------------------------------
+sub Newdate{
+# newdate: calculate new date from old plus increment (in days, pos or neg)
+# synopsis: $newdate=newdate($date,$dif);
+# author: Gerard Cats, 2 September 2000
+   my $old=shift(@_);
+   my $inc=shift(@_);
+   $old=idat2c($old)+$inc;
+   return ic2dat($old);
+}
+# ------------------------------------------------------------------------------
+sub ic2dat{
+# ic2dat: return date from century day
+# synopsis: $date=ic2dat($Cday);
+# author: Gerard Cats, 2 June 2000
+   my $Cday=shift(@_);
+   local($y, $m, $d, $l, $m);
+
+      $l = $Cday + 68569 + 2415020;
+      $d = 4*$l;
+      $n = ($d-$d%146097) / 146097;
+      $d = 146097*$n + 3;
+      $l = $l - ( $d-$d%4) / 4;
+      $d = 4000*($l+1);
+      $y = ( $d-$d%1461001 ) / 1461001;
+      $d = 1461*$y;
+      $l = $l - ($d-$d%4)/ 4 + 31;
+      $d = 80*$l;
+      $m = ($d-$d%2447) / 2447;
+      $d = 2447*$m;
+      $d = $l - ($d-$d%80)/ 80;
+      $l = ($m-$m%11) / 11;
+      $m = $m + 2 - 12 * $l;
+      $y = 100 * ( $n- 49 ) + $y + $l;
+
+   return 10000*$y+$m*100+$d;
+}
+# ------------------------------------------------------------------------------
+sub idat2c{
+# idat2c: return century day from date
+# synopsis: $cday=idat2c($Date);
+# author: Gerard Cats, 2 June 2000
+   my $Date=shift(@_);
+   local($y,$m,$d,$r);
+   $y=($Date-$Date%10000)/10000;
+   $r=$Date-$y*10000;
+   $m=($r-$r%100)/100+1;
+   $d=$r-$m*100;
+   if($m<=3){ $y=$y-1; $m=$m+12; }
+   $r=($y - $y%100)/100;
+   return 365*$y-693923+($y-$y%4)/4 -$r+($r-$r%4)/4+int(30.6001*$m)+$d;
+}
+# ------------------------------------------------------------------------------
+sub isadate{
+# isadate: return century day from date
+# synopsis: isadate($string) || die;
+# author: Gerard Cats, 8 January 2001
+   local($_)=shift;
+   my ($y, $m, $d ) = /^([0-9]{1,4})(0[1-9]|1[012])(0[1-9]|[12][0-9]|3[01])$/;
+   return 0 unless $y;				# 0 AD never existed
+   return 0 if ( $d == 31 && grep /$m/, ("02","04","06","09",11));
+   return 1 unless ( $m == 2);
+   return 0 if ( $d == 30);
+   return 1 unless ( $d == 29);
+   return 0 unless ( $y % 4 == 0);
+   return 1 unless ( $y % 100 == 0);
+   return 0 unless ( $y % 400 == 0);
+   return 1;
+}
+
+
+
+#===============================================================================
+# FILE HANDLING
+#===============================================================================
+
+
+# ------------------------------------------------------------------------------
+sub reducepath{
+# reducepath: remove ./ and reduce ../ and // in a path name
+# synopsis: $reducepath=reducepath($Path);
+# author: Gerard Cats, 1 June 2000
+   my $Path=shift(@_);
+   while ($Path =~ s(/\./)(/)) {}
+   while ($Path =~ s([^/]*/\.\./)()){}
+   while ($Path =~ s(//)(/)){}
+   return $Path;
+}
+# ------------------------------------------------------------------------------
+sub dirname{
+# dirname: remove last component
+# synopsis: $dirname=dirname($Path);
+# author: Gerard Cats, 3 June 2000
+   my $Path=shift(@_);
+   $Path =~ s/(\/|^)[^\/]*\/*$//;
+   return $Path;
+}
+# ------------------------------------------------------------------------------
+sub basename{
+# basename: return last component
+# synopsis: $basename=basename($Path);
+# author: Gerard Cats, 5 June 2000
+   my $Path=shift(@_);
+   if ($Path =~/^$/) { return ".";}
+   if ($Path =~ /^\/*$/ ) { return "/"; }
+   $Path =~ s/\/*$//;
+   $Path =~ s/^.*\///;
+   return $Path;
+}
+# ------------------------------------------------------------------------------
+sub Mkdir{
+# Mkdir: make a directory, recursively.  return the return value of the last
+#        mkdir attempted
+# synopsis: Mkdir($Dir, $Mode) || die "couldn't make $Dir: $!; stopped"
+# author: Gerard Cats, 31 May 2000
+   my $Dir=shift(@_);
+   my $Mode=shift(@_);
+   local($d);
+   local($wd,@s);
+
+   if ($Dir =~ /^\/.*/ ) {
+      $d="/";
+   } else {
+      $d="";
+   }
+   @s=split("/",$Dir);
+   foreach $wd (@s) {
+      {  $d=$d.$wd;
+         next if ( -d $d);
+         mkdir($d, $Mode) || return;
+      }
+      continue {$d=$d."/"}
+   }
+   $!=""; return 1;
+}
+# ------------------------------------------------------------------------------
+sub OpenW{
+# OpenW: open a file for writing; but first, make the required directories with $Mode
+# synopsis: OpenW(Filehandle,File,$Mode)  || die "couldn't make $File: $!; stopped"
+# author: Gerard Cats, 31 May 2000
+   my $Fh=shift(@_);
+   my $Fil=shift(@_);
+   my $Mode=shift(@_);
+   local($d);
+   local($f,@s);
+   $d=$Fil; $d =~ s/\/[^\/]*$//; if($Fil !~ /.*\/.*/) {$d="";}
+   if ("$d" && !-d $d) {Mkdir($d,$Mode) || return;}
+   open($Fh,">".$Fil) || return;
+   $!=""; return 1;
+}
+# ------------------------------------------------------------------------------
+sub findpath {
+# findpath: find a file in a path
+# synopsis: $full_path=findpath($Path,$File,$Mode)
+#                      || die "couldn't locate $File in $Path; stopped";
+# findpath works like GNU-findpath (3C)
+# author: Gerard Cats, 29 May 2000
+
+   local($dir);
+   my $Path = shift(@_);
+   my $File = shift(@_);
+   my $Mode = shift(@_);
+   $_ = $File;
+   if (/^\//)
+# the path is not relative:
+      { testmode($Mode,"$File") && return "$File"}
+   else
+# the path may be relative:
+   {  foreach $dir (split(/:/,$Path)){
+      if ( $dir == "" ) {
+# an empty path component returns unadourned file
+         testmode($Mode,"./$File") && return "$File" ;
+      }
+      testmode($Mode,"$dir/$File") && return "$dir/$File" ;
+      }
+   }
+   return "";
+}
+# ------------------------------------------------------------------------------
+sub testmode{
+# testmode: test whether a file has all required modes
+# synopsis: $success=testmode($Mode, $File)
+# returns 1 if file $File exists and all modes in $mode are true for it, else 0
+# author: Gerard Cats, 29 May 2000
+
+   my ($Mode, $File) = @_;
+   ( -e $File ) || return 0;
+   $_ = $Mode;
+   /r/ && (! -r _ ) && return 0;
+   /w/ && (! -w _ ) && return 0;
+   /x/ && (! -x _ ) && return 0;
+   /f/ && (! -f _ ) && return 0;
+   /b/ && (! -b _ ) && return 0;
+   /c/ && (! -c _ ) && return 0;
+   /d/ && (! -d _ ) && return 0;
+   /p/ && (! -p _ ) && return 0;
+   /u/ && (! -u _ ) && return 0;
+   /g/ && (! -g _ ) && return 0;
+   /k/ && (! -k _ ) && return 0;
+   /s/ && (! -s _ ) && return 0;
+   return 1;
+}
+# ------------------------------------------------------------------------------
+1;

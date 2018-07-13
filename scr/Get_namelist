@@ -1,0 +1,264 @@
+#!/bin/bash
+#
+# Namelist generator for Harmonie namelists
+# 
+# Note that some variables in the namelists are still
+# added/changed/removed in the scripts themselves
+#
+# By giving no arguments to the script all namelist will be generated
+#
+# Ulf Andrae, SMHI, 2013
+#
+
+set -a 
+
+# Arguments
+NAMELIST=${1:-ALL}
+  TARGET=$2
+
+# Set some default environment variables
+LMPOFF=${LMPOFF-.FALSE.}
+L_GATHERV_WRGP=${L_GATHERV_WRGP-.TRUE.}
+NPROC_IO=${NPROC_IO-0}
+NREQIN=${NREQIN-1}
+NREQIN_GRAUPEL=${NREQIN_GRAUPEL-0}
+NREQIN_CLOUD_FRACTI=${NREQIN_CLOUD_FRACTI--1}
+NREQIN_TKE=${NREQIN_TKE--1}
+GNSS_OBS=${GNSS_OBS-0}
+LVARBC_GNSS=${LVARBC_GNSS-F}
+LHARATU=${LHARATU-.FALSE.}
+TSTEP_4D=${TSTEP_4D-0}
+CIFDIR=${CIFDIR-''}
+NPROMA=${NPROMA--30}
+NXGSTPERIOD=${NXGSTPERIOD--1}
+
+# Check option
+
+
+if [ $NAMELIST == ALL ] ; then
+ NAMELISTS="forecast dfi traj4d \
+ e927 e927_surfex \
+ e401 e501 \
+ pp \
+ oulan \
+ canari \
+ screening \
+ minimization \
+ minim4d \
+ screen4d \
+ climate \
+ femars \
+ sfx_forecast sfx_dfi \
+ sfx_pgd \
+ prolog_prep \
+ sfx_prep \
+ sfx_oi_main \
+ sfx_ekf_main"
+
+ TARGET=""
+
+ # Set some default values
+ DYNAMICS=${DYNAMICS-nh}                       # h|nh
+ SURFACE=${SURFACE-surfex}                     # surfex|old_surface
+ PHYSICS=${PHYSICS-arome}                      # arome|alaro|aladin
+ CISBA=${CISBA-3-L}                            # 2-L|3-L
+ MASS_FLUX_SCHEME=${MASS_FLUX_SCHEME-edmfm}    # edmfm|edkf
+ LNOEXTZ=${LNOEXTZ-.FALSE.}                    # .TRUE.|.FALSE.
+ DOMAIN=${DOMAIN-TEST}                         # Any domain
+ LATC=${LATC-LATC}
+ LONC=${LONC-LONC}
+ LAT0=${LAT0-LAT0}
+ LON0=${LON0-LON0}
+ GSIZE=${GSIZE-GSIZE}
+ NDGUXG=${NDGUXG-NDGUXG}
+ NDLUXG=${NLUXG-NDLUXG}
+ SINLAT0=${SINLAT0-SINLAT0}
+ BDINT=${BDINT-3}
+ LMPOFF=${LMPOFF-.FALSE.}                      # .FALSE.|.TRUE.
+ TSTEP=${TSTEP-60}
+ SURFEX_PREP=${SURFEX_PREP-no}
+ SIMULATION_TYPE=${SIMULATION_TYPE-nwp}        # nwp|climate
+ POSTP=${POSTP-none}	
+ NFPOS=${NFPOS-0}	                           # 0,1
+ L_GATHERV_WRGP=${L_GATHERV_WRGP-.TRUE.}       # .FALSE.|.TRUE.
+ CROUGH=${CROUGH-"'Z01D'"}                     # "'Z01D'"|"'BE04'"
+ TSTEP=${TSTEP-60}
+ SURFEX_PREP=${SURFEX_PREP-no}
+ FCINT=${FCINT-3}
+ LSPBDC=${LSPBDC-.FALSE.}
+ ALARO_VERSION=${ALARO_VERSION-0}
+ VERT_DISC=${VERT_DISC-vfd}
+
+else
+
+ NAMELISTS=$NAMELIST
+
+fi
+
+# Set flags depending on environment variables
+
+
+E927_DYNAMICS=""
+PP_DYNAMICS=""
+if [ $DYNAMICS == nh ] ; then
+ E927_DYNAMICS=e927_nh
+ PP_DYNAMICS=pp_nh
+fi
+
+PP_SURFACE=""
+if [ $SURFACE == surfex ] ; then
+ PP_SURFACE=pp_surfex
+fi
+
+# Misc
+EXTRA_FORECAST_OPTIONS=$VERT_DISC
+
+# Surfex
+EXTRA_SFX_OPTIONS=""
+
+if [ $SURFEX_PREP == "yes" ]; then
+ PREP_SFX=offline_prep
+else
+ PREP_SFX=fullpos_prep
+fi
+
+if [ $SURFEX_LSELECT == "yes" ]; then
+ SFX_OUTPUT_OPTIONS="-n surfex_selected_output.pm surfex_output"
+else
+ SFX_OUTPUT_OPTIONS=""
+fi
+
+CISBAL=$( echo $CISBA | sed "s/\-//" )
+
+# Extra physics options
+PHYSICS_OPTIONS="$PHYSICS"
+if [ $PHYSICS == arome ] ; then
+ PHYSICS_OPTIONS="$PHYSICS_OPTIONS $MASS_FLUX_SCHEME"
+fi
+
+if [ $PHYSICS == alaro ] ; then
+ PHYSICS_OPTIONS="$PHYSICS_OPTIONS alaro$ALARO_VERSION"
+fi
+
+
+# MUSC
+if [ $DOMAIN == MUSC ] ; then
+ EXTRA_FORECAST_OPTIONS="$EXTRA_FORECAST_OPTIONS musc args"
+fi
+
+# Climate simulation
+if [ $SIMULATION_TYPE == "climate" ] ; then
+ EXTRA_FORECAST_OPTIONS="$EXTRA_FORECAST_OPTIONS cc01_mse args"
+fi
+
+# VARBC
+VARBC_NAM="varbc"
+[ \( $GNSS_OBS -eq 1 -a $LVARBC_GNSS = "T" \) ] && VARBC_NAM="$VARBC_NAM varbc_gnss"
+
+
+
+# Namelist rules
+# The order of aruments is important!
+
+NAMELIST_BASE=${NAMELIST_BASE-harmonie}
+DEFAULT="-n empty.pm -n ${NAMELIST_BASE}_namelists.pm global host_specific mpp file"
+
+for NAMELIST in $NAMELISTS ; do
+
+ case $NAMELIST in
+
+ forecast|dfi|traj4d|femars)
+    NAMELIST_CONFIG="$DEFAULT dynamics $DYNAMICS ${PHYSICS_OPTIONS} ${DYNAMICS}_${PHYSICS} $SURFACE $EXTRA_FORECAST_OPTIONS args"
+    if [ $POSTP == "inline" ]; then
+      if [ $NAMELIST == "forecast" ] ; then
+        NAMELIST_CONFIG="$NAMELIST_CONFIG -r NAMFPC -r NAMSATS args"
+      fi
+    fi
+    [[ $NAMELIST == dfi ]] && NAMELIST_CONFIG="$NAMELIST_CONFIG dfi args"
+    [[ $NAMELIST == traj4d ]] && NAMELIST_CONFIG="$NAMELIST_CONFIG $VARBC_NAM traj4d args"
+    [[ $NAMELIST == femars ]] && NAMELIST_CONFIG="$NAMELIST_CONFIG femars femars_${PHYSICS}"
+    ;;
+
+ e927|e927_surfex)
+    NAMELIST_CONFIG="$DEFAULT fullpos e927 $E927_DYNAMICS"
+    [[ $NAMELIST == e927 ]] && NAMELIST_CONFIG="$NAMELIST_CONFIG e927_${PHYSICS} args"
+    [[ $NAMELIST == e927_surfex ]] && NAMELIST_CONFIG="$NAMELIST_CONFIG e927_surfex args"
+    ;;
+
+ e401|e501)
+    NAMELIST_CONFIG="$DEFAULT TLAD_tests"
+    [[ $NAMELIST == e401 ]] && NAMELIST_CONFIG="$NAMELIST_CONFIG e401 args"
+    ;;
+
+ pp)
+    NAMELIST_CONFIG="$DEFAULT fullpos pp_default $PP_DYNAMICS $PP_SURFACE pp_$PHYSICS -r NAMFPC"
+    ;;
+
+ oulan)
+    NAMELIST_CONFIG="-n harmonie_namelists.pm oulan"
+    ;;
+
+ canari)
+    NAMELIST_CONFIG="$DEFAULT canari ${PHYSICS}_canari $EXTRA_FORECAST_OPTIONS args"
+    ;;
+
+ screening)
+    NAMELIST_CONFIG="$DEFAULT screening ${PHYSICS}_screening ${EXTRA_FORECAST_OPTIONS} $VARBC_NAM args"
+    ;;
+
+ minimization)
+    NAMELIST_CONFIG="$DEFAULT $VARBC_NAM minimization ${PHYSICS}_minimization ${EXTRA_FORECAST_OPTIONS} args"
+    ;;
+
+ minim4d)
+    NAMELIST_CONFIG="$DEFAULT minimization dynamics ${DYNAMICS} ${PHYSICS_OPTIONS} ${PHYSICS}_minimization ${SURFACE} ${EXTRA_FORECAST_OPTIONS} $VARBC_NAM minim4d args"
+    ;;
+
+ screen4d)
+    NAMELIST_CONFIG="$DEFAULT screening dynamics ${DYNAMICS} ${PHYSICS_OPTIONS} ${PHYSICS}_screening ${SURFACE} ${EXTRA_FORECAST_OPTIONS} screen4d $VARBC_NAM args"
+    ;;
+
+ climate)
+    NAMELIST_CONFIG="-n empty.pm -n harmonie_namelists.pm global host_specific mpp climate"
+    ;;
+
+  sfx_forecast|sfx_dfi)
+    NAMELIST_CONFIG="-n surfex_namelists.pm isba_forecast forecast ${PHYSICS}_forecast ${SURFEX_SEA_ICE}_forecast ${EXTRA_SFX_OPTIONS} ${SFX_OUTPUT_OPTIONS}"
+    ;;
+
+  sfx_pgd)
+    NAMELIST_CONFIG="-n surfex_namelists.pm isba_$CISBAL isba_pgd pgd ${PHYSICS}_pgd"
+    ;;
+
+  prolog_prep)
+    NAMELIST_CONFIG="-n surfex_namelists.pm isba_prep offline_prep ${PHYSICS}_prep"
+    ;;
+
+  sfx_prep)
+    NAMELIST_CONFIG="-n surfex_namelists.pm isba_prep $PREP_SFX ${PHYSICS}_prep ${SURFEX_SEA_ICE}_prep"
+    ;;
+
+  sfx_oi_main)
+    NAMELIST_CONFIG="-n surfex_namelists.pm assim_surfex oi_main ${SURFEX_SEA_ICE}_assim"
+    ;;
+
+  sfx_ekf_main)
+    NAMELIST_CONFIG="-n surfex_namelists.pm isba isba_$CISBAL isba_forecast forecast assim_surfex ekf_main ${SURFEX_SEA_ICE}_assim"
+    ;;
+
+  *)
+    echo "No such namelist to generate $NAMELIST"
+    exit 1
+    ;;
+
+ esac
+
+ # Generate the namelist
+ TARGET=${TARGET:-namelist_$NAMELIST}
+ echo "Generate namelist for $NAMELIST"
+ echo " CONFIG:$NAMELIST_CONFIG"
+ $HM_LIB/nam/gen_namelist.pl $NAMELIST_CONFIG > $TARGET || { echo "Could not create $TARGET" ; exit 1 ; } 
+
+ TARGET=""
+
+done

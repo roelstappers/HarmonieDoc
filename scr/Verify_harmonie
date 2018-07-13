@@ -1,0 +1,298 @@
+#!/bin/bash
+
+. header.sh
+
+
+[ -d $WRK ] || $MKDIR $WRK
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+# Extract observations
+[[ -s $EXTRARCH ]] || $MKDIR $EXTRARCH
+cd $EXTRARCH || exit
+
+DATADIR=$EXTRARCH
+
+if [ $COMPCENTRE = ECMWF ] ; then
+   # Copy data from $PERM to to HOST0
+   ${RSYNC-rsync} -vaux $PARCH/archive/extract $HM_DATA/archive
+else
+  # Copy data from EXTRARCH to WRK area
+  for F in $( ls -1 $EXTRARCH/*.tar.gz ) ; do
+    cp $F $WRK/$WDIR/
+  done
+  DATADIR=$WRK/$WDIR
+  cd $DATADIR
+fi
+
+for F in $( ls -1 *.tar.gz ) ; do
+ gzip -cd $F | tar xvf -
+done
+
+cd $HM_LIB/util/monitor/scr || exit
+
+SDATE=$( mandtg -date $VER_SDATE )
+EDATE=$( mandtg -date $DTG       )
+VERLIST=$( perl -S Output_freq.pl TDF_VERILIST $LL ) || exit
+MIN_VERI_DIFF=$( perl -S Output_freq.pl MIN_VERI_DIFF ) || exit
+
+# Set WebgraF environment variables
+PROJECT=$EXP
+export WEBGRAF_BASE=$HM_LIB/util/monitor/WebgraF
+WEBCALL="$WEBGRAF_BASE/bin/WebgraF -p $PROJECT -b $EXTRARCH/WebgraF"
+
+# Create a copy of WebgraF
+[[ -s $EXTRARCH/WebgraF ]] || $MKDIR $EXTRARCH/WebgraF
+$WEBCALL -I "Monitoring for $EXP"
+
+cat << EOF > $WRK/Env_exp
+#
+# Main definition file for HARMONIE verification package
+#
+
+# Path to binaries, scripts and WebgraF page
+BASE=$HM_LIB/util/monitor
+
+# Definition of BIN,SCR and WRK directory
+BIN=$BINDIR
+SCR=\$BASE/scr
+WRK=$WRK/$WDIR
+
+# Experiment names and paths,should be space separated
+EXP="$EXP"
+OBSPATH=$DATADIR/
+P1=$DATADIR/
+MODPATH="\$P1"
+
+# Project name, will be the name on the web page
+PROJECT=$PROJECT
+
+# Explanation on webpage
+HELP=""
+
+# Date handling
+# PERIOD_TYPE 1 : SDATE - EDATE, 
+#             2 : SDATE - EDATE in monthly pieces
+# 
+# IDATE is the very first date for PERIOD_TYPE=2 it determines the 
+# lentght of the date menu in WebgraF
+#
+PERIOD_TYPE=1
+
+SDATE=$SDATE
+EDATE=$EDATE
+IDATE=$SDATE
+
+#
+# Single stations can be defined with comma separated
+# station number and a text for the web page
+#
+# STNLIST_PLOT="00002574,00006348"
+# STNLIST_PLOT_TXT="NORRKOPING,CABAUW"
+#
+STNLIST_PLOT=-1
+STNLIST_PLOT_TXT=-1
+
+######################
+# Surface parameters #
+######################
+#
+# Change in the file plotdefs.pm for text and limits
+#
+# PS : Mslp
+# TT : T2m
+# TTHA : T2m, adjusted for model and observation station height differences
+# TN : Min T2m
+# TX : Max T2m
+# TD : Td2m
+# TDD : Td2m deficit ( TT - TD )
+# FF : Wind speed
+# FX : Max wind speed
+# GG : Wind gust
+# GX : Max wind gust
+# DD : Wind direction
+# QQ : Specific humidity
+# RH : Relative humidity
+# PE1 : Precipitation 1h
+# PE3 : Precipitation 3h
+# PE6 : Precipitation 6h
+# PE|PE12 : Precipitation 12h
+# PE24 : Precipitation 24h
+# NN : Total Cloud cover
+# VI : Visibility, not in vfld files yet
+#
+
+# Active parameters
+SURFPAR="PS FF GX DD TT TN TX TD RH QQ NN PE"
+
+# Things to plot:
+# GEN    : General forcast length statistics
+# TIME   : Timeserie statistics
+# SCAT   : Scatterplot
+# MAP    : Bias maps
+# FREQ   : Frequency plots
+# DAYVAR : Daily variation
+# XML    : Station statistics in xml format
+# CONT   : Contingency tables
+# VERT   : Vertical profiles only available for TEMP data
+# SEAS   : Seasonal cycle
+# 
+SURFPLOT="GEN TIME MAP FREQ SCAT CONT XML DAYVAR"
+
+# Select skill scores to be plotted if CONT is activated in SURFPLOT
+# Frequency     : Frequency
+# Frequencybias : Frequency bias
+# POD           : Probability of detection ( hit rate )
+# FAR           : False alarm ratio
+# FA            : False alarm rate
+# TS            : Threath score
+# WILSON        : Wilson diagram, a combination of POD, TS, FAR and frequency bias
+# KSS           : Hansen-Kupiers skill score
+# AI            : Area index
+# SEDS          : Symmetric Extreme Dependency Score
+# EDI           : Extremal Dependency Index
+# SEDI          : Symmetric Extremal Dependency Index
+# ETS           : Equitable threat score
+
+SCORELIST="WILSON KSS Frequency"  
+
+# Select whether skill scores are based on classes and/or thresholds (CONT must be activated)
+SCORETYPES="classes thresholds"
+
+# Selection for surface verification as defined in selection.pm
+# Note that XML statistics will be defined for the
+# first selection only
+#
+SURFSELECTION="ALL"
+
+# Interval in hours between observations
+OBINT_SURF=$MIN_VERI_DIFF
+
+# Assimilation cycle interval
+FCINT_SURF=$FCINT
+
+# List of initial times, use ALL or specific times
+SURFINI_HOURS="ALL"
+
+# Forecast lengths to be read from vfld files
+FCLEN_SURF_READ="$VERLIST"
+
+# Forecast lengths used for GEN verification
+FCLEN_SURF="$VERLIST"
+
+# Forecast lengths used in daily variation calculations
+FCLEN_DAYVAR="$VERLIST"
+
+# Forecast lengths used in scatter/frequency plots
+# and contingency tables. Keep the number of used forecast
+# lengths reasonable
+FCLEN_SCAT="$VERLIST"
+
+# Forecast lengths used in timeserie plots
+FCLEN_SURF_TIME="$VERLIST"
+
+# Forecast lengths used in maps
+FCLEN_MAP="$VERLIST"
+
+########################
+# Upper air parameters #
+########################
+#
+# Change in the file plotdefs.pm for text and limits
+#
+# TT : Temperature
+# TD : Dew point temperature
+# FF : Wind speed
+# DD : Wind direction
+# QQ : Specific humidity
+# RH : Relative humidity
+# FI : Geopotential
+#
+
+TEMPPAR="TT TD FF DD FI RH QQ"
+
+TEMPPLOT="GEN TIME VERT"
+
+# Interval in hours between observations
+OBINT_TEMP=12
+# Assimilation cycle interval
+FCINT_TEMP=$FCINT
+
+# List of initial times, use ALL or specific times
+TEMPINI_HOURS="ALL"
+
+# Forecast lengths used for verification
+FCLEN_TEMP="$VERLIST"
+
+# Forecast lengths used for vertical profiles
+FCLEN_TEMP_VERT="$VERLIST"
+
+# Forecast lengths used in timeserie plots
+FCLEN_TEMP_TIME="24"
+
+# TEMP levels to be verified
+LEV_LST="925 850 700 500 300 200 150 100 50"
+# TEMP levels for TD and RH are limited to lower ones
+LEV_LST_TD="925 850 700 500 300 "
+LEV_LST_RH="925 850 700 500 300 "
+
+
+# Selection for TEMP verification
+# Note that XML statistics will be defined for the
+# first selection only
+TEMPSELECTION="ALL"
+
+# Select output_type
+# 1  Postscript + PNG
+# 2  PNG
+# 3  JPEG
+# 4  SVG
+OUTPUT_TYPE=2
+
+# Run all parameters in one go
+# Impossible if you have a long period/large number of stations
+# or several parameters
+ALL_AT_ONCE=yes
+# Number of parameters in each block if ALL_AT_ONCE=no
+# The default value is half of the surface variables
+PAR_PER_BLOCK=$(( $( echo $SURFPAR | wc | awk '{print $2}' ) / 2 + 1 ))
+
+
+# WebgraF call, set WEBCALL empty if not used
+WEBGRAF_BASE=$WEBGRAF_BASE
+WEBCALL="$WEBCALL"
+
+# Export all variables
+export PROJECT WEBCALL WEBGRAF_BASE BASE BIN MYEXP IDATE SDATE EDATE HELP SCR WRK
+export OUTPUT_TYPE PERIOD_TYPE
+export LEV_LST LEV_LST_RH LEV_LST_TD SURFPAR TEMPPAR 
+export OBINT_SURF FCINT_SURF 
+export FCLEN_SURF FCLEN_DAYVAR FCLEN_SCAT FCLEN_SURF_TIME
+export OBINT_TEMP FCINT_TEMP FCLEN_TEMP FCLEN_TEMP_VERT FCLEN_TEMP_TIME
+export SURFPLOT TEMPPLOT
+export STNLIST_PLOT STNLIST_PLOT_TXT
+export ALL_AT_ONCE
+export SCORELIST SCORETYPES
+export SURFINI_HOURS TEMPINI_HOURS PAR_PER_BLOCK
+
+###########################
+# End of definitions
+###########################
+EOF
+
+# Run the verification
+./Run_verobs $WRK/Env_exp SURF || exit
+./Run_verobs $WRK/Env_exp TEMP|| exit
+
+# Fix softlinks
+$HM_LIB/util/monitor/scr/Link2file $EXTRARCH/WebgraF || exit
+
+# Normal exit
+cd $WRK 
+rm -fr $WDIR
+trap 0
+
+exit

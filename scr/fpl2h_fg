@@ -1,0 +1,35 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+## Interpolate low res first guess to full res with Fullpos
+
+loop=${1?"Loop number not given as input"}
+res=$( echo $ILRES | cut -d, -f$loop )
+
+
+BDCLIM=${CLIMDIR}_${res}x
+
+LLL=$( perl -e "printf('%4.4i', $FCINT - 1)" )
+
+INFILE=$WRK/ELSCF${CNMEXP}_${res}x+$LLL
+OUTFILE=$WRK/ELSCF${CNMEXP}_${res}x_hr+$LLL
+
+E927 -h -$LLL -i $INFILE -o $OUTFILE -v BOUNDARIES || exit
+
+cp $OUTFILE $ARCHIVE/fg_h2l2h
+
+# Normal exit
+cd ..
+
+rm -fr $WDIR
+trap - 0
+exit
+

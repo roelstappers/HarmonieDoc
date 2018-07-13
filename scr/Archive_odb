@@ -1,0 +1,26 @@
+#!/bin/bash
+# 
+# Archive ODB
+#
+
+. header.sh
+
+
+cd $WRK || exit
+
+if [ "${ARSTRATEGY-medium}" != minimum ]; then
+   # ODB
+   #
+   if [ $ANASURF != none -o $ANAATMO = 3DVAR -o $ANAATMO = 4DVAR ] ; then
+
+      rm -f odb*.tar
+      for ODB in $( ls -1 | grep '^odb' ) ; do
+         if [ -d $ODB ]; then
+            tar cvf $ODB.tar $ODB
+            mv -f $ODB.tar $ARCHIVE/.
+         fi
+      done
+   fi
+fi
+trap 0
+exit

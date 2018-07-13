@@ -1,0 +1,73 @@
+#!/bin/ksh
+
+#
+# Build IFS binaries with gmkpack
+#
+
+. header.sh
+
+#
+# Build your own gmkpack
+# For Harmonie we use $GMKROOT/support for $GMK_SUPPORT
+#
+
+export GMK_SUPPORT=$GMKROOT/support
+export SHELL=/bin/ksh
+
+# Name of the master
+PROG=`echo $MODEL | tr '[A-Z]' '[a-z]'`
+
+#
+# Make a crude check of ROOTPACK health
+#
+
+ROOTDIR=$ROOTPACK/${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION
+# Existance
+[[ -s $ROOTDIR ]] || { echo "Could not find $ROOTDIR" ; exit 1 ; }
+# Do we have any libraries
+[[ $( ls -1 $ROOTDIR/lib | wc -l ) -eq 0 ]] && { echo "No libraries found in $ROOTDIR/lib" ; exit 1 ; }
+
+#
+# Build gmkpack
+#
+
+cd $GMKROOT
+./build_gmkpack || exit
+
+#
+# Copy our own architecture file to the place where gmkpack expects it.
+#
+
+cp $GMKROOT/arch/$GMKFILE.$OPTION $GMKROOT/support/arch/.
+
+#
+# Create your own pack with gmkpack only if the ics-file 
+# does not exist
+#
+
+export GMKFILE=$GMKFILE
+
+if [ ! -s $HOMEPACK/gmkpack_build/ics_$PROG ] ; then
+   gmkpack -r $REVISION -b $BRANCH -o $OPTION -v $VERSION -p $PROG -u gmkpack_build || exit
+fi
+
+#
+# Sync possible changed sources
+#
+
+Sync_src || exit 
+
+cd $HOMEPACK/gmkpack_build/
+
+# Compile the libraries and link PROG
+#
+
+./ics_$PROG || exit
+
+# Copy gmkpack compile binary to HARMONIE BINDIR. Make directory in case Build_gl has not done it already 
+[ -d $BINDIR ] || mkdir $BINDIR
+mv $HOMEPACK/gmkpack_build/bin/* $BINDIR/. 
+
+# Normal exit
+trap - 0
+exit

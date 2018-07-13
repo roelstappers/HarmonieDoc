@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#
+# Build gl_grib_api
+#
+
+. header.sh
+
+# Sync possible changed sources
+
+MYTASK=gl_grib_api
+
+cd $HM_LIB/util/$MYTASK/ || exit
+
+$MAKE ARCH=$HARMONIE_CONFIG || exit 1
+
+# Copy binaries to main bin directory
+[[ -s $BINDIR ]] || mkdir -p $BINDIR
+[[ -s ./$HARMONIE_CONFIG/bin ]] && cp ./$HARMONIE_CONFIG/bin/* $BINDIR/.
+
+trap - 0
+exit

@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Get options (and remove them)
+ENVFILE=
+while getopts E: opt ; do
+    case $opt in
+	E)   ENVFILE=$OPTARG ;;
+    esac
+done
+shift $(( OPTIND - 1 ))
+
+# Source environment if told so
+if [ -s "$ENVFILE" ]; then
+    source $ENVFILE
+fi
+
+task=${1?"$0: no task given, abort"}
+shift
+
+# Execute the task and pass all extra arguments
+exec $task $*

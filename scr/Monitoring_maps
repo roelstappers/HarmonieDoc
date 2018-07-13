@@ -1,0 +1,394 @@
+#!/bin/bash
+
+. header.sh
+
+
+Workdir $HM_DATA/Charts
+trap "Trapbody $HM_DATA/Charts ; exit 1" 0
+cd $HM_DATA/Charts
+
+export wrkd=$HM_DATA/Charts
+export INT_ACT="INTERACTIVE"
+exp=${EXP-not-set}
+
+#==============================================================
+
+#  1. Computer system related settings
+#  ------------------------------------
+#
+#  Define values for computer configuration
+
+set +e
+
+case `hostname` in
+    tempo*)  host_map=tempo;      group_map=CrayFMI;;
+    meteo*)  host_map=meteo;      group_map=CrayFMI;;
+    ecga*)   host_map=ecgate;     group_map=ECMWF;;
+    alju*)   host_map=alju;       group_map=PC_FMI;;
+    eerola*) host_map=eerolak;    group_map=PC_FMI;;
+    mortti*) host_map=mortti;     group_map=SgiFMI;;
+    vertti*) host_map=vertti;     group_map=SgiFMI;;
+    *)       host_map=`hostname`; group_map=local;;
+    esac
+
+echo HOST OF THIS RUN: $host_map
+
+# According to the define the variables dependent on the conputer
+#-----------------------------------------------------------------
+
+# ECMWF
+if [ $group_map = ECMWF ]; then
+   export SCRATCH=${SCRATCH-/scratch/ms/$GROUP/$USER/}
+   path_gl=/home/ms/fi/fne/bin/
+   path_mandtg=/home/ms/fi/fne/bin/
+   scp_path=/usr/bin/
+   date_path=/usr/bin/
+   use grads
+   export grads=grads
+   export INT_ACT=${INT_ACT-EC_BATCH}
+
+# Cray at FMI
+elif [  $group_map = CrayFMI ]; then
+    export MODULEPATH=/opt/cray/xt-asyncpe/3.3/modulefiles:/opt/totalview-support/1.0.6/modulefiles:/opt/modulefiles:/opt/modules/3.1.6
+   export  SCRATCH=${SCRATCH-/lustre/tmp/$USER/}
+   export grads=grads
+   . /home/hirlam2/bin/bashmodules
+   module load grads
+   path_mandtg=/home/hirlam2/bin/
+   export gl=/home/hirlam2/bin/gl
+   export DR_HOOK_NOT_MPI=1
+   export scp_path=/usr/bin/
+   date_path=/bin/
+   path_gl=/home/hirlam2/kalle/bin
+   export INT_ACT=${INT_ACT-INTERACTIVE}
+
+# Kalle's environment at FMI
+elif [  $group_map = PC_FMI ]; then
+   SCRATCH=${SCRATCH-$HOME/tmp/$USER/}
+   export grads=grads
+   date_path=/bin/
+   path_mandtg=/home/eerolak/bin/
+   path_gl=/home/eerolak/bin
+   export grads=gradsc
+   export INT_ACT=${INT_ACT-INTERACTIVE}
+# SGI machines at FMI
+elif [  $group_map = SgiFMI ]; then
+   SCRATCH=${SCRATCH-/scratch/tmp/$USER/}
+   export grads=gradsc
+   export path_gl=/home/users/eerolak/bin/
+   date_path=/bin/
+   export INT_ACT=${INT_ACT-INTERACTIVE}
+# Default (you can add your own environment here)
+else
+   echo "=================================================="
+   echo " You must define your computer environment"
+   echo "          EXIT "
+   echo "=================================================="
+   exit 1
+fi
+
+#-----------------------------------------------------------------
+# Check that the local home, mandtg, and gl are in the path
+
+export PATH=:$path_gl:$path_date:${PATH}:$path_mandtg:$path_scp:
+export scp2hirlam="scp -r -i $HOME/.ssh/kalle"
+export ssh2hirlam="ssh    -i $HOME/.ssh/kalle kalle@hirlam.org"
+
+# Working directory
+
+export ENV_MAPBIN=$MAPBIN/Env_mapbin_$EXP
+w=${wrkd-$SCRATCH}
+export MAP_WRK=$w
+test -d $MAP_WRK || mkdir -p  $MAP_WRK
+
+
+
+#==============================================================
+
+cat << 'EOF' > $ENV_MAPBIN
+
+
+#==============================================================
+
+#  3. Graphs, and the forecast lenghts of upper level forecasts,
+#     surface forecasts and analysis
+#     NOTE for HARMONIE experiments these are modified in MAKE_MAPS
+#  -------------------------------------------------------------
+
+# For surface fields
+
+
+len_suHI="00 03 06 09 12 15 18 21 24 27 30 33 36 39 42 45 48"
+par_suHI="Pbl_height V10_vector  ps_and_prec V10_speedx  V10_gustx clouds \
+        V10_stream   teta_e_850  t2   teta_e_850_comp"
+
+##len_suHA="00 03 06"
+len_suHA="00 03 06 09 12 15 18 21 24 27 30 33 36"
+par_suHA="Pbl_height V10_vector  ps_and_prec V10_speedx  V10_gustx clouds \
+        V10_stream   teta_e_850  t2 teta_e_850_comp"
+
+# For upper-air fields
+
+len_upHI="00 06 12 18 24 30 36 42 48"
+par_upHI="chart_850   chart_500  chart_300"
+
+##len_upHA="00 06"
+len_upHA="00 06 12 18 24 30 36"
+par_upHA="chart_850  chart_500   chart_300 vertvel_700 vertvel_500  vertvel_300 "
+
+# For analysis fields
+
+len_anHI="00"
+par_anHI="snow_depth snow_depth_meter snow_depth_openl sst_ice snow_thickness"
+len_anHA="00"
+par_anHA="snow_depth snow_depth_meter sst_ice snow_thickness"
+
+#==============================================================
+
+# 4. Define the plotting areas, the corners of the area are relative
+#    to the current rotation. Pseudo hashes are used for definitions
+#-------------------------------------------------------------------
+
+# Default
+export AREAS="1_Finland 2_Denmark 3_Netherlands"
+
+# DMI Harmonie area
+if [ $exp = F03 ]; then
+   export AREAS="2_Denmark $AREAS"
+elif [ $exp = H37beta2 -o $exp = H36h14 -o $exp = DENMARK36 -o $exp = denmark37 -o $exp = MONIT  ]; then
+   export AREAS="2_Denmark"
+elif [ $exp = ARO35h1 -o $exp = aro36h14  -o $exp = aro36h1X ]; then
+   export AREAS="1_Finland 8_AROFMI"
+elif [ $exp = ECJAN  ]; then
+   export AREAS="3_Netherlands"
+fi
+
+#                    west    east    south    north  polat polon
+ar_1_RCR_area="    -49.875  37.275  -32.025  35.025  -30.  0.0"
+ar_2_North_area="   -6.8    19.908  -10.2    13.212  -30.  0.0"
+ar_3_South_area="  -17.0    10.0    -29.0   -10.0    -30.  0.0 "
+ar_4_West_area="   -18.0    12.0    -16.0     4.0    -30.  0.0 "
+ar_5_Greenland="   -28.0     5.0     -0.0    30.0    -30.  0.0 "
+ar_6_Cent_Europe="   0.0    20.0    -18.0     0.0    -30.  0.0"
+ar_7_DENMARK36="     0.0    12.0     -9.0     3.0    -30.  0.0"
+ar_8_AROFMI="       -1.5    12.5     -2.5    11.5    -30.  0.13"
+
+ar_1_Finland="       5.0    16.0     -1.5    13.0    -30.  0.0"
+ar_2_Denmark="       0.0    12.0     -9.0     3.0    -30.  0.0"
+ar_3_Netherlands="  -2.0     7.0    -12.0    -3.0    -30.  0.0"
+
+#==============================================================
+
+# 5. Define the properties of different experiments and the default
+#    experiments 
+#-------------------------------------------------------------------
+
+# Define the default experiments
+
+#export EXP="V72 MB71 V72b2 ECMWF RCR_T3 I15"
+#export EXP="RCR"
+
+# Use the templates to define the properties of the different experiments
+# Structure: For each experiment space (one or more) separated list 
+# in the following order
+#
+#     LINK     INTER     SURF_SCHEME   ARCHIVE_DIR    
+#
+# For LINK there are option
+#     LINK:          |LINK|MARS|ecp|cp
+#  LINK   - Link the the files in ARCHIVE_DIR, no need op copying
+#  MARS   - Get the data from MARS at ECMWF
+
+#  ecp    - Use ecp-command to get the data (ECFS)
+#  cp     - Use  cp-command to get the data (ECFS)
+
+# For INTER there are options
+#     INTER:         |NOINTER|INTER
+# NOINTER - no interpolation is needed, the data is in correct orientation
+# INTER   . Interpolate data
+
+# For SURF_SCHEME the are options
+#     SURF_SCHEME    |OLD_SURF|NEWSNOW|ECSURF
+# OLD_SURF - old Hirlam surface scheme
+# NEWSNOW  - Newsnow scheme
+# ECSURF   - For ECMWF data
+
+# ARCHIVE_DIR    template for archive directory
+# together with LINK define where to find the data, see examples below
+
+env_MB71="HIRL 1hr  LINK  NOINTER  OLD_SURF  /lustre/tmp/hirlam2/hl_data/MB71/%YYYY%MM%DD_%HH"
+env_V72=" HIRL 1hr  LINK  NOINTER  OLD_SURF  /lustre/tmp/hirlam2/hl_data/V72/%YYYY%MM%DD_%HH"
+##env_V72=" HIRL 1hr  LINK  NOINTER  OLD_SURF  /mnt/nwparchive/hl_arc/V72/%YYYY/%MM/%DD/%HH"
+##env_RCRa="HIRL 1hr  LINK  NOINTER  NEWSNOW   /lustre/tmp/hirlam2/hl_data/V73rc3/%YYYY%MM%DD_%HH"
+env_V73=" HIRL 1hr  LINK  NOINTER  NEWSNOW   /lustre/tmp/hirlam2/hl_data/V73rc3/%YYYY%MM%DD_%HH"
+##env_V73rc3=" HIRL 1hr  LINK  NOINTER  NEWSNOW   /lustre/tmp/hirlam2/hl_data/V73rc3/%YYYY%MM%DD_%HH"
+env_V73rc3="HIRL 1hr  LINK  NOINTER  NEWSNOW   /mnt/nwparchive/hl_arc/V73rc3/%YYYY/%MM/%DD/%HH"
+
+env_V74beta1="HIRL 1hr LINK NOINTER NEWSNOW  /lustre/tmp/hirlam2/hl_data/V74beta1/%YYYY%MM%DD_%HH"
+env_V74rc1="  HIRL 1hr LINK NOINTER NEWSNOW  /lustre/tmp/hirlam2/hl_data/V74rc1/%YYYY%MM%DD_%HH"
+env_RCRa="    HIRL 1hr LINK NOINTER NEWSNOW  /lustre/tmp/hirlam2/hl_data/V74rc1/%YYYY%MM%DD_%HH"
+
+env_ECMWF=" ECMWF 1hr MARS  NOINTER  ECSURF    not_relevant"
+env_RCR_T3="HIRL  1hr ecp   NOINTER  NEWSNOW   ec:/nhz/hirlam/RCR_T3B/%YYYY/%MM/%DD/%HH"
+env_RCR_74T="HIRL  1hr ecp   NOINTER  NEWSNOW   ec:/nhz/hirlam/RCR_74T/%YYYY/%MM/%DD/%HH"
+env_RCR_74B="HIRL  1hr ecp   NOINTER  NEWSNOW   ec:/nhz/hirlam/RCR_74B/%YYYY/%MM/%DD/%HH"
+
+env_I15="   HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/ie/dui/flddata7.2"
+env_M09="   HIRL  1hr ecp   INTER    OLD_SURF  ectmp:/hirlam/oprfld/DMI/M09/%YYYY/%MM"
+env_F03="   HIRL  1hr ecp   INTER    NEWSNOW   ectmp:/hirlam/oprfld/DMI/F03/%YYYY/%MM"
+
+env_C22="   HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/se/smz/hirlam.org/C22"
+env_C11="   HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/se/smz/hirlam.org/C11"
+env_E11="   HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/se/smz/hirlam.org/E11"
+env_G05="   HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/se/smz/hirlam.org/G05"
+
+env_GLMST=" HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/dk/nhe/glamepsdata/HirEPS_S_EC/fcst"
+env_GLMKF=" HIRL  1hr cp    INTER    OLD_SURF  /scratch/ms/dk/nhe/glamepsdata/HirEPS_K_EC/fcst"
+
+env_DENMARK36="HARMONIE 1hr  ecp INTER   HARMONIE  ec:/nhz/harmonie/DENMARK/%YYYY/%MM/%DD/%HH"
+env_denmark37="HARMONIE 1hr  ecp INTER   HARMONIE  ectmp:/nhz/harmonie/denmark37/%YYYY/%MM/%DD/%HH"
+env_ECJAN="HARMONIE     1hr  ecp INTER   HARMONIE  ec:/nlf/harmonie/ECJAN/%YYYY/%MM/%DD/%HH"
+
+env_ARO35h1="  HARMONIE 15mn LINK NOINTER HARMONIE  /lustre/tmp/hirlam2/hm_home/PC2/archive/%YYYY/%MM/%DD/%HH"
+env_aro36h14=" HARMONIE 15mn LINK INTER HARMONIE  /lustre/tmp/hirlam2/hm_home/aro36h14/archive/%YYYY/%MM/%DD/%HH"
+
+env_aro36h1X=" HARMONIE 15mn LINK INTER   HARMONIE  /lustre/tmp/hirlam2/hm_home/aro36h14/archive/%YYYY/%MM/%DD/%HH"
+
+env_MONIT="    HARMONIE 1hr  ecp INTER   HARMONIE  ectmp:/fne/harmonie/MONIT/%YYYY/%MM/%DD/%HH"
+env_H36h14="   HARMONIE 1hr  ecp INTER   HARMONIE  ectmp:/fne/harmonie/H36h14/%YYYY/%MM/%DD/%HH"
+
+env_H37beta2=" HARMONIE 1hr  ecp INTER   HARMONIE  ectmp:/fne/harmonie/H37beta2/%YYYY/%MM/%DD/%HH"
+
+env_default=" HARMONIE 1hr  ecp INTER   HARMONIE  ectmp:/fne/harmonie/$exp/%YYYY/%MM/%DD/%HH"
+####env_TRJUN7=" HARMONIE 1hr  ecp INTER   HARMONIE  ectmp:/fne/harmonie/TRJUN7/%YYYY/%MM/%DD/%HH"
+#----------------------------------------------------------------
+# Define the default dates
+
+export dyyyymmddhh=2010050300       # first date in yyyymmddhh
+export dyyyymmddhh=2010050300       # last date
+export dstep=6                      # step
+
+#==============================================================
+
+#  2. Define the common RCR area to which intertpolation is done
+#     if needed, note that interpolation is not needed, if the 
+#     rotation of the originally fields is   -30.0, 0.0
+#  -------------------------------------------------------------
+
+# First set the default
+
+echo EXP $exp
+eval thisexp=$env_$exp
+echo THISEXP: $thisexp
+if [ "$thisexp" = "$exp" ]; then
+  thisexp="$env_default"
+  echo THISEXP from default: $thisexp
+fi
+
+env_nwp=`echo $thisexp | awk '{print $1}'`
+
+# First set the default for Hirlam
+
+if  [ $env_nwp = HIRL -o  $env_nwp = ECMWF ]; then
+    export NLON=582        # areasize
+    export NLAT=448
+    export NORTH=35.025
+    export EAST=37.275
+    export SOUTH=-32.025   # area boundaries
+    export WEST=-49.875
+    export POLAT=-30.0                   # coordinates of South pole
+    export POLON=0.0
+    export DY=0.15
+    export DX=0.15
+    POLAT=`perl -e "printf('%3.3i', '$POLAT')"`
+    POLON=`perl -e "printf('%3.3i', '$POLON')"`
+    
+# Harmonie area
+elif [ $env_nwp = HARMONIE ]; then
+#    if [ $exp = aro36h14  ]; then
+
+#	export WEST=7.0
+#	export SOUTH=-1.0
+#	export EAST=15.5
+#	export NORTH=13.5
+#	export DX=0.02
+#	export DY=0.02
+#	export POLAT=-030.
+#	export POLON=013.
+
+##	export POLAT=-030
+##	export POLON=000
+
+#	export POLAT=`perl -e "printf('%3.3i', '$POLAT')"`
+#	export POLON=`perl -e "printf('%3.3i', '$POLON')"`
+#	export NLON=`perl -e "print ( ( ( '$EAST' - '$WEST'   ) / '$DX' )  + 1 )"`
+#	export NLAT=`perl -e "print ( ( ( '$NORTH' - '$SOUTH' ) / '$DY' )  + 1 )"`
+
+    if [ $exp = aro36h1X -o $exp = aro36h14 ]; then
+
+	export WEST=5.0
+	export SOUTH=-1.5
+	export EAST=16.
+	export NORTH=13.
+	export DX=0.02
+	export DY=0.02
+	export POLAT=-030
+	export POLON=000
+
+	export POLAT=`perl -e "printf('%3.3i', '$POLAT')"`
+	export POLON=`perl -e "printf('%3.3i', '$POLON')"`
+	export NLON=`perl -e "print ( ( ( '$EAST' - '$WEST'   ) / '$DX' )  + 1 )"`
+	export NLAT=`perl -e "print ( ( ( '$NORTH' - '$SOUTH' ) / '$DY' )  + 1 )"`
+    else
+
+	export WEST=-0.2
+	export SOUTH=-12.0
+	export EAST=15.8
+	export NORTH=13.5
+	export DX=0.02
+	export DY=0.02
+	export POLAT=-030.
+	export POLON=000.
+	
+	export POLAT=`perl -e "printf('%3.3i', '$POLAT')"`
+	export POLON=`perl -e "printf('%3.3i', '$POLON')"`
+	export NLON=`perl -e "print ( ( ( '$EAST' - '$WEST'   ) / '$DX' )  + 1 )"`
+	export NLAT=`perl -e "print ( ( ( '$NORTH' - '$SOUTH' ) / '$DY' )  + 1 )"`
+    fi
+#else
+#    echo Undefined model type  $env_nwp
+#    exit 1
+
+fi
+
+# 5. Some other variable
+#--------------------------
+
+#export copy2hirlam=yes       # do we scp to hirlam.org
+export copy2hirlam=no       # do we scp to hirlam.org
+                                               
+export hirlam_org_base=/data/www/project/portal/oprint/data/Charts/
+
+export do_gl=yes            # use gl for interpolation
+
+export make_upper=yes
+export make_surf=yes
+export make_anal=yes
+
+export clean_local_dir=yes
+
+###########################
+# End of definitions
+###########################
+EOF
+
+# Run the monitoring
+
+$MAPBIN/MAKE_MAPS $EXP $DTG $DTG || exit
+
+# Normal exit
+cd $WRK 
+
+trap 0
+
+exit

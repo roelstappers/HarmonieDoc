@@ -1,0 +1,72 @@
+#!/bin/bash
+
+. header.sh
+. functions.ksh
+
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#|===================================================================
+#|
+#| Perturb some surface parameters in SURFEX initial file
+#|
+#|===================================================================
+
+
+# Get real dir/basename of surfex start file
+sfxin=$( readlink -f $WRK/fc_start_sfx )
+[ -e "$sfxin" ] || { echo "Could not get SURFEX start file!"; exit; }
+sfxin_dir=$( dirname $sfxin )
+sfxin_base=$( basename $sfxin )
+output=${sfxin_base}_perturbed
+cp $sfxin $output
+
+# Construct directives file
+M=1000000
+e=$( perl -e '$e=shift;$e=~s/^0+//;print $e' "$ENSMBR" )
+iseed=$( perl -e "printf '%d', $M*$e + $DTG % $M" )
+# The next three are default values, see table below for overriding per parameter
+iradius=12
+iiter=10
+zstd_clip=2.0
+cat > PERTSFC.dir <<EOF
+'$output'
+$iseed
+$e
+$iradius
+$iiter
+$zstd_clip
+# Comments allowed from here (but not above!)
+# Note: the values of iradius, iiter and zstd_clip above are default, if given
+# <= 0 below, the default value will be used
+# Parameter, std.dev. (+: multiplicative, -: additive), min, max, iradius, iiter, zstd_clip
+'VEG',  0.1,  0.01,    0.95,   -1, -1, -1.0
+'LAI',  0.1,  0.1,     6.0,    -1, -1, -1.0
+'CV',   0.1,  0.5e-5,  4.0e-5, -1, -1, -1.0
+'Z0',   0.2,  0.05,    4.0,    -1, -1, -1.0
+'ALB',  0.1,  0.5,     1.5,    -1, -1, -1.0
+'SST', -0.25, 272.0, 350.0,    -1, -1, -1.0
+'TS',  -1.5,  240.0, 350.0,    -1, -1, -1.0
+'WG',   0.1,  0.001,   0.6,    -1, -1, -1.0
+'SNOW', 0.5,  0.1,   500.0,    -1, -1, -1.0
+EOF
+
+# Run program
+export DR_HOOK_NOT_MPI=1
+$BINDIR/PERTSFC || exit 1
+
+# Copy output to archive and point fc_start_sfx to the perturbed file
+mv $output $ARCHIVE/$output
+ln -sf $ARCHIVE/$output $WRK/fc_start_sfx
+echo "$WRK/fc_start_sfx points to $ARCHIVE/$output"
+
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

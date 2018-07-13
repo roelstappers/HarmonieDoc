@@ -1,0 +1,168 @@
+#!/bin/bash
+#
+# Prepare_ob: Copy/prepare BUFR observation file
+# 
+# Arguments: none
+#
+# - Extract BUFR data from MARS if obYYYYMMDDHH file is not found
+# - Split the bufr file per observation type ( ShuffleBufr )
+
+. header.sh
+
+cd $WRK
+WDIR=splitObs
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#-----------------------------------------------------------------------
+# Initialisation of HARMONIE environment - directories and other stuff 
+#------------------------------------------------------------------------
+
+. include.ass
+
+#----- COPYING/PREPARING OBSERVATIONS FILES
+
+OBDIR=$( Parse_dates.pl $OBDIR $DTG )
+[[ -s $OBDIR ]] || $MKDIR $OBDIR
+BUFRFILE=$OBDIR/ob$DTG
+
+if [ ! -s $BUFRFILE ] ; then
+  [ "$COMPCENTRE" == ECMWF -o "$COMPCENTRE" == METNO -o "$COMPCENTRE" == METIE ] || { echo "Could not find $BUFRFILE" ; exit ; }
+  #--- Get BUFR file from MARS
+
+  # Get the domain to extract and an extended domain for
+  # ATOVS and AMV
+  export SOUTHEC WESTEC NORTHEC EASTEC
+
+  $BINDIR/domain_prop_grib_api $CLIMDIR/m$MM -f -MAX_EXT > foo$$
+
+   EASTEC=$( tail -1 foo$$ | head -1 | sed 's/ //g' )
+  NORTHEC=$( tail -2 foo$$ | head -1 | sed 's/ //g' )
+   WESTEC=$( tail -3 foo$$ | head -1 | sed 's/ //g' )
+  SOUTHEC=$( tail -4 foo$$ | head -1 | sed 's/ //g' )
+
+  set +e
+  EASTEC_SAT=$( expr $EASTEC + 50 )
+  WESTEC_SAT=$( expr $WESTEC - 50 )
+ NORTHEC_SAT=$( expr $NORTHEC + 50 )
+ SOUTHEC_SAT=$( expr $SOUTHEC - 50 )
+  set -e
+
+  rm -f foo$$
+
+  set +e
+  let " TIMEWINDOW = $SHUFFLE_LMARGIN_OB / 60 "
+  MINUTE=$(expr $SHUFFLE_LMARGIN_OB % 60 )
+  MINUTE=$(expr 0 - $MINUTE )
+  set -e
+  MINUTE=`perl -e "printf('%2.2i', '$MINUTE')"` 
+
+  [[ $MINUTE -ne 0 ]] && TIMEWINDOW=$( expr $TIMEWINDOW - 1 )
+
+  [ $TIMEWINDOW -lt 0 ] && SDTG=`mandtg $DTG + $TIMEWINDOW`
+  DATE=`mandtg -date $SDTG`
+  TIME=`mandtg -hour $SDTG`$MINUTE
+  RANGE=$( expr $SHUFFLE_RMARGIN_OB - $SHUFFLE_LMARGIN_OB )
+  RANGE=$( expr $RANGE - 1 )
+  
+  GEOL="$NORTHEC/$WESTEC/$SOUTHEC/$EASTEC"
+  GEOL_SAT="$NORTHEC_SAT/$WESTEC_SAT/$SOUTHEC_SAT/$EASTEC_SAT"
+
+  OBSLIST=""
+  OBSLIST_SAT=""
+
+  if [ $BUOY_OBS -eq 1 ];then
+    if [ $LNEWBUOYBUFR -eq 1 ];then
+      OBSLIST="$OBSLIST/181/182"
+    else
+      OBSLIST="$OBSLIST/DSU"
+    fi
+  fi
+
+  if [ $AIRCRAFT_OBS -eq 1 ];then
+    OBSLIST="$OBSLIST/SLNS"
+  fi
+
+  if [ $AMV_OBS -eq 1 ];then
+    OBSLIST_SAT="$OBSLIST_SAT/SAT7"
+  fi
+
+  if [ $AMSUA_OBS -eq 1 ] || [ $AMSUB_OBS -eq 1 ] ;then
+    OBSLIST_SAT="$OBSLIST_SAT/ATOV"
+  fi
+
+  if [ $PILOT_OBS -eq 1 ];then
+    OBSLIST="$OBSLIST/P/PS/WP/EWP/EWTP"
+  fi
+
+  if [ $SYNOP_OBS -eq 1 ];then
+    if [ $LNEWSYNOPBUFR -eq 1 -a $LNEWSHIPBUFR -eq 1 ];then
+      OBSLIST="$OBSLIST/170/172/180/183"
+    elif [ $LNEWSYNOPBUFR -eq 1 -a $LNEWSHIPBUFR -ne 1 ];then
+      OBSLIST="$OBSLIST/170/172/SS/SAS/SH"
+    elif [ $LNEWSYNOPBUFR -ne 1 -a $LNEWSHIPBUFR -eq 1 ];then
+      OBSLIST="$OBSLIST/S/SA/SAB/180/183"
+    else
+      OBSLIST="$OBSLIST/S/SA/SAB/SS/SAS/SH"
+    fi
+  fi
+
+  if [ $TEMP_OBS -eq 1 ];then
+    if [ $LNEWTEMPBUFR -eq 1 ];then
+      OBSLIST="$OBSLIST/109/111"
+    else
+      OBSLIST="$OBSLIST/T/TS/TD/TM"
+    fi
+  fi
+
+  OBSLIST=$( echo $OBSLIST | sed 's/\///' )
+  OBSLIST_SAT=$( echo $OBSLIST_SAT | sed 's/\///' )
+  [[ -s ./retrin ]] && rm -f retrin
+
+  # Write request for Conventional data
+  if [ "$OBSLIST" != "" ]; then
+    WriteMARSreq -p OB -d $DATE -t $TIME -r $RANGE -o $OBSLIST     -m ./retrin -z $BUFRFILE -g $GEOL
+  fi
+
+  # Write request for ATOVS and AMV over and extended area
+  if [ "$OBSLIST_SAT" != "" ]; then
+    WriteMARSreq -p OB -d $DATE -t $TIME -r $RANGE -o $OBSLIST_SAT -m ./retrin -z $BUFRFILE -g $GEOL_SAT
+  fi
+
+  if [ $IASI_OBS -eq 1 ];then
+    # Write request for IASI
+    WriteMARSreq -p OB -d $DATE -t $TIME -r $RANGE -o IASI -m ./retrin -z $BUFRFILE -g $GEOL
+  fi
+
+  #--- MARS queue
+  if [ -f retrin ]; then
+    mars retrin || { echo "MARS failed" ; exit 1 ; }
+  else
+    echo "No MARS request exists. Please select some observation types!"
+  fi
+  [ ! -s ${BUFRFILE} ] && echo "Error: Zero size BUFR file ${BUFRFILE} ... aborting"
+  [ ! -s ${BUFRFILE} ] && exit 1
+fi 
+
+# Check bufrtables
+Link_bufrtables
+
+# Split the buffer files depending on observation type (for oulan and bator)
+if [[ $USEOBSOUL -eq 0 ]]; then
+    # -s1: SYNOP SHIP observations extracted in file named synop
+    # -e1 : WIGOS AMDAR will be extracted in <amdar>
+    $BINDIR/ShuffleBufr -i ${BUFRFILE} -s1 -e1 -a || { echo "SHUFFLEBUFR failed" ; exit 1 ; }
+elif [[ $USEOBSOUL -eq 1 ]]; then
+    # -s3: SYNOP SHIP observations extracted in file named ship
+    # -e2 : WIGOS AMDAR will be extracted in <eamda>
+    $BINDIR/ShuffleBufr -i ${BUFRFILE} -s3 -e2 -a || { echo "SHUFFLEBUFR failed" ; exit 1 ; }
+else
+    echo "USEOBSOUL=$USEOBSOUL is not valid ... exiting"
+    exit 1
+fi
+
+# Normal exit
+
+trap - 0
+exit

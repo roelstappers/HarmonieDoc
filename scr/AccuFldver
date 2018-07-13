@@ -1,0 +1,279 @@
+#!/bin/bash
+
+# 
+# Accumulate field verification statistics
+#
+# Arguments
+# -s DTGBEG : start of accumulation
+# -e DTGEND : end of accumulation
+# -n DTGFIL : date in the name of the resulting file
+# -p POST   : Post processing suffix on file names
+#
+
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+
+while getopts s:e:n:p: opt; do
+  case $opt in
+    s) DTGBEG=$OPTARG  ;;
+    e) DTGEND=$OPTARG  ;;
+    n) DTGFIL=$OPTARG  ;;
+    p) POST=$OPTARG    ;;
+  esac
+done
+
+# These variables are exported from outside
+
+echo ---------------------------------
+echo "BINDIR         $BINDIR"
+echo "FLDVER_HOURS   $FLDVER_HOURS"
+echo "FLD_ARC        $FLD_ARC"
+echo "HL_DATA        $HL_DATA"
+echo "HM_DATA        $HM_DATA"
+echo ---------------------------------
+
+# The default is to run average, stdv, bias and rmse
+# by defining STAT_ALL=yes, the following extra products are computed
+# squared, sum of analysis and forecasts, produc an*fc
+
+#STAT_ALL=yes
+STAT_ALL=no
+
+
+FCINT=6
+date=$( mandtg -date  $DTGBEG )
+yy=$( mandtg -year  $DTGBEG )
+mm=$( mandtg -month $DTGBEG )
+dd=$( mandtg -day   $DTGBEG )
+hh=$( mandtg -hour  $DTGBEG )
+
+# Define the directory and file structures
+# HARMONIE
+
+if [ ! "$HM_DATA" = "" ] ; then
+    FLD_ARC=$ARCHIVE
+    ARCHIVE=$ARCHIVE_ROOT/@YYYY@/@MM@/@DD@/@HH@/
+    [ ${ENSMBR--1} -ge 0 ] && ARCHIVE=${ARCHIVE}mbr$ENSMBR/ 
+    [[ -s $FLD_ARC ]] || { echo "$FLD_ARC does not exist, exit" ; exit 1 ; } 
+    NAMLIS_E=${NAMLIS_E-/}
+
+# HIRLAM
+
+elif [ ! "$HL_DATA" = "" ] ; then
+    ARCHIVE=$HL_DATA/@YYYY@@MM@@DD@_@HH@/
+    FLD_ARC=${FLD_ARC-$HL_DATA/FIELD_VERIF/fields/$DTGFIL}
+    [[ -d $FLD_ARC ]] || { mkdir -p  $FLD_ARC  ; } 
+
+else
+   echo "Error finding out HIRLAM or HARMONIE"
+   exit 1
+fi
+
+
+cat > namfile24 <<EOF
+ &naminterp
+ outkey%date=${yy}${mm}01
+ outkey%time=00,
+ outkey%endstep=00,
+ outkey%nbit=24,
+ $NAMLIS_E
+EOF
+
+
+# Average
+old="#"
+test -s  $FLD_ARC/acc_an_ave_$DTGFIL+000$POST && \
+    old="$FLD_ARC/acc_an_ave_$DTGFIL+000$POST" 
+$MPPGL $BINDIR/xtool_grib_api \
+    -sdtg1 $DTGBEG -edtg1 $DTGEND    \
+    -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+    -a $old        \
+    -fcint $FCINT  \
+    -o acc_an_ave_$DTGFIL+000$POST \
+    -op AVE        \
+    -n namfile24
+
+# STDV
+
+old="#"
+test -s  $FLD_ARC/an_stdv_$DTGFIL+000$POST && \
+    old="$FLD_ARC/an_stdv_$DTGFIL+000$POST"
+$MPPGL $BINDIR/xtool_grib_api \
+ -sdtg1 $DTGBEG -edtg1 $DTGEND    \
+ -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+ -p2 acc_an_ave_$DTGFIL+000$POST \
+ -a $old        \
+ -fcint $FCINT  \
+ -o acc_an_stdv_$DTGFIL+000$POST \
+ -op STDV        \
+ -n namfile24
+
+
+if [ $STAT_ALL = yes ]; then
+
+# Square of analysis
+   old="#"
+   test -s  $FLD_ARC/acc_an_sqr_$DTGFIL+000$POST && \
+       old="$FLD_ARC/acc_an_sqr_$DTGFIL+000$POST" 
+   $MPPGL $BINDIR/xtool_grib_api \
+       -sdtg1 $DTGBEG -edtg1 $DTGEND    \
+       -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+       -a $old       \
+       -fcint $FCINT \
+       -o acc_an_sqr_$DTGFIL+000$POST \
+       -op SQR    \
+       -n namfile24 
+
+
+# Sum of analysis
+   old="#"
+   test -s  $FLD_ARC/acc_an_sum_$DTGFIL+000$POST && \
+       old="$FLD_ARC/acc_an_sum_$DTGFIL+000$POST" 
+   $MPPGL $BINDIR/xtool_grib_api \
+       -sdtg1 $DTGBEG -edtg1 $DTGEND    \
+       -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+       -a $old       \
+       -fcint $FCINT \
+       -o acc_an_sum_$DTGFIL+000$POST \
+       -op SUM       \
+       -n namfile24
+
+fi
+
+for LL in $FLDVER_HOURS ; do
+
+   DTGBEG_FC=$( mandtg $DTGBEG + -$LL )
+   DTGEND_FC=$( mandtg $DTGEND + -$LL )
+   LLL=`perl -e "printf('%3.3i', '$LL')"`
+
+   cat > namfile24 <<EOF
+ &naminterp
+ outkey%date=${yy}${mm}01
+ outkey%time=00,
+ outkey%endstep=$LL,
+ outkey%nbit=24,
+ $NAMLIS_E
+EOF
+
+   # Average
+
+   old="#"
+   test  -s $FLD_ARC/acc_fc_ave_$DTGFIL+${LLL}$POST && \
+       old="$FLD_ARC/acc_fc_ave_$DTGFIL+${LLL}$POST"
+   $MPPGL $BINDIR/xtool_grib_api \
+       -sdtg1 $DTGBEG_FC -edtg1 $DTGEND_FC \
+       -p1 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+       -a $old       \
+       -fcint $FCINT \
+       -o acc_fc_ave_$DTGFIL+${LLL}$POST \
+       -op AVE       \
+       -n  namfile24   
+
+   # BIAS (an-fc)
+
+   old="#"
+   test  -s $FLD_ARC/acc_bias_$DTGFIL+${LLL}$POST && \
+       old="$FLD_ARC/acc_bias_$DTGFIL+${LLL}$POST"
+   $MPPGL $BINDIR/xtool_grib_api \
+       -sdtg1 $DTGBEG    -edtg1 $DTGEND    \
+       -sdtg2 $DTGBEG_FC -edtg2 $DTGEND_FC \
+       -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+       -p2 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+       -a $old       \
+       -fcint $FCINT \
+       -op DIFF      \
+       -o acc_bias_$DTGFIL+${LLL}$POST \
+       -n namfile24
+
+   # RMSE (an-fc)**2
+
+   old="#"
+   test  -s $FLD_ARC/acc_rmse_$DTGFIL+${LLL}$POST && \
+       old="$FLD_ARC/acc_rmse_$DTGFIL+${LLL}$POST"
+   $MPPGL $BINDIR/xtool_grib_api \
+       -sdtg1 $DTGBEG    -edtg1 $DTGEND    \
+       -sdtg2 $DTGBEG_FC -edtg2 $DTGEND_FC \
+       -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+       -p2 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+       -a $old       \
+       -fcint $FCINT \
+       -op RMSE \
+       -o acc_rmse_$DTGFIL+${LLL}$POST \
+       -n namfile24
+
+   # STDV, note that STDV cannot be done cumulatively, so do it only 
+   #        $DTGBEG .ne. $DTGEND and acc_fc_stdv_$DTGFIL+${LLL}$POST does not
+   #        exist 
+
+   old="#"
+   if [ ! -s $FLD_ARC/acc_fc_stdv_$DTGFIL+${LLL}$POST ]; then
+       $MPPGL $BINDIR/xtool_grib_api \
+	   -sdtg1 $DTGBEG -edtg1 $DTGEND    \
+	   -p1 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+	   -p2 acc_fc_ave_$DTGFIL+${LLL}$POST \
+           -fcint $FCINT -o acc_fc_stdv_$DTGFIL+${LLL}$POST -op STDV \
+	   -n namfile24
+  fi
+
+   if [ $STAT_ALL = yes ]; then
+
+   # Sum
+       old="#"
+       test  -s $FLD_ARC/acc_fc_sum_$DTGFIL+${LLL}$POST && \
+	   old="$FLD_ARC/acc_fc_sum_$DTGFIL+${LLL}$POST"
+       $MPPGL $BINDIR/xtool_grib_api \
+	   -sdtg1 $DTGBEG_FC -edtg1 $DTGEND_FC \
+	   -p1 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+	   -a $old       \
+	   -fcint $FCINT \
+	   -o acc_fc_sum_$DTGFIL+${LLL}$POST \
+	   -op SUM       \
+	   -n  namfile24   
+      
+   # Square of forecasts valid now
+       old="#"
+       test  -s $FLD_ARC/acc_fc_sqr_$DTGFIL+${LLL}$POST && \
+	   old="$FLD_ARC/acc_fc_sqr_$DTGFIL+${LLL}$POST"
+       $MPPGL $BINDIR/xtool_grib_api \
+	   -sdtg1 $DTGBEG_FC -edtg1 $DTGEND_FC \
+	   -p1 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+	   -a $old       \
+	   -fcint $FCINT \
+	   -o acc_fc_sqr_$DTGFIL+${LLL}$POST\
+	   -op SQR    \
+	   -n  namfile24
+
+ # Product (an*fc)
+
+       old="#"
+       test  -s $FLD_ARC/acc_prod_$DTGFIL+${LLL}$POST && \
+	   old="$FLD_ARC/acc_prod_$DTGFIL+${LLL}$POST"
+       $MPPGL $BINDIR/xtool_grib_api \
+	   -sdtg1 $DTGBEG    -edtg1 $DTGEND    \
+	   -sdtg2 $DTGBEG_FC -edtg2 $DTGEND_FC \
+	   -p1 $ARCHIVE/fld_an_@YYYY@@MM@@DD@@HH@+000$POST \
+	   -p2 $ARCHIVE/fld_fc_@YYYY@@MM@@DD@@HH@+${LLL}$POST \
+	   -a $old       \
+	   -fcint $FCINT \
+	   -op PROD  \
+	   -o acc_prod_$DTGFIL+${LLL}$POST \
+	   -n namfile24
+       
+   fi
+done
+
+# Archive
+mv acc_* $FLD_ARC || true 
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

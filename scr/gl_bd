@@ -1,0 +1,202 @@
+#!/bin/bash
+
+#
+# Prepare boundaries from HIRLAM/ECMWF to ALADIN
+# Arguments :
+# h  Fc hour to prepare
+# i  Input file 
+# o  Output file 
+# c  Target domain climate file
+# Optional f yes indicates that this is a first guess
+#
+
+. header.sh
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#
+
+
+ FG=no
+
+ while getopts c:h:i:o:f: opt; do
+                case $opt in
+                        c)      CLIMATE=$OPTARG  ;;
+                        h)      MLL=$OPTARG  ;;
+                        i)      INFILE=$OPTARG  ;;
+                        o)      OUTFILE=$OPTARG  ;;
+                        f)      FG=$OPTARG ;;
+                esac
+ done
+
+MLL=`perl -e "printf('%3.3i', '$MLL')"`
+
+
+YY=`echo $DTG | awk '{print substr($1,1,4)}'`
+MM=`echo $DTG | awk '{print substr($1,5,2)}'`
+DD=`echo $DTG | awk '{print substr($1,7,2)}'`
+HH=`echo $DTG | awk '{print substr($1,9,2)}'`
+
+# Parameters list depends on the model version!
+if [ $HOST_MODEL = "ifs" ] ; then
+   SHORTNAME="'clwc','ciwc','snow','rain','tke','graupel',"
+   PARAMETERS="-1,-1,-1,-1,-1,-1,"
+elif [ $HOST_MODEL = "hir" ] ; then
+   SHORTNAME="'cwat','#','snow','rain','#','graupel',"
+   PARAMETERS="-1,058,-1,-1,200,-1"
+else
+   echo "gl_bd should not be called with HOST_MODEL=$HOST_MODEL"
+   exit 1
+fi
+
+FIELDTYPE="000,000,000,000,000,000"
+FIELDNAME="'LIQUID_WATER','SOLID_WATER','SNOW','RAIN','TKE','GRAUPEL'"
+
+# NH switch
+# For diagnose of vertical divergence, i.e. do not procude
+# bogus NH fields with gl
+if [ "$DYNAMICS" = "nh" ] ; then
+  if [ "$LSPBDC" = "yes" ]; then
+    ln -sf $BDCLIM/m$CM climate_aladin
+  fi
+  GLFLAG="-d"
+fi
+
+#
+# Build namelist
+#
+cat << EOF > naminterp
+ &NAMINTERP
+EOF
+
+if [ "$VLEV" != BOUNDARIES ] ; then
+echo OUTGEO%NLEV=$( perl -S Vertical_levels.pl $VLEV  NLEV  ) >> naminterp
+echo AHALF=$( perl -S Vertical_levels.pl $VLEV AHALF ) >> naminterp
+echo BHALF=$( perl -S Vertical_levels.pl $VLEV BHALF ) >> naminterp
+fi
+
+
+if [ $FG = yes ] ; then
+
+ # Only create extra upper air fields if this is
+ # the initial file
+
+cat << EOF >> naminterp
+   atmkey(1:)%shortname = $SHORTNAME
+   atmkey(1:)%pid       = $PARAMETERS
+   atmkey(1:)%nnn       = $FIELDTYPE
+   atmkey(1:)%faname    = $FIELDNAME
+EOF
+
+fi
+
+# Write spectral or gridpoint q
+if [ $PHYSICS == "arome" ] ; then
+   LQGP=T
+   echo LQGP=$LQGP >> naminterp
+fi 
+
+LOLDTESSEL=F
+LSWICONV=T
+LDEMAND_ALL_LEVELS=T
+if [ $BDSTRATEGY = "eps_ec" ]; then
+  LSWICONV=F
+  LDEMAND_ALL_LEVELS=F
+elif [ $BDSTRATEGY = "eps_ec_oper" ] ; then
+  LDEMAND_ALL_LEVELS=F
+elif [ $DTG -lt 2007060500 -a $HOST_MODEL = "ifs" -o $BDSTRATEGY = "era" ] ; then
+  LOLDTESSEL=T
+fi
+echo LOLDTESSEL=$LOLDTESSEL >> naminterp
+echo LSWICONV=$LSWICONV >> naminterp
+echo LDEMAND_ALL_LEVELS=$LDEMAND_ALL_LEVELS >> naminterp
+# Horisontal interpolation order could be made a config_exp.h option (1-3)
+echo ORDER=3 >> naminterp
+
+#
+# We do not need to bother about surface fields for the
+# boundary files, only for the initial file
+#
+if [ $MLL -gt 0 -a $SIMULATION_TYPE = "nwp" ] ; then
+   echo LSKIP_SURFACE=T, >> naminterp
+fi
+
+#
+# Add SLAF perturbations if requested and this is not the initial file
+#
+if [ $SLAFLAG -gt 0 ] ; then
+
+ 
+  echo LPERT=T, >> naminterp
+  echo SLAFK=$SLAFK >> naminterp
+
+  # First SLAF file
+  SLL=$(( 10#$MLL + $SLAFLAG ))
+  SLL=`perl -e "printf('%3.3i', '$SLL')"`
+  FILE2=$( grep "${SLL}|" $WRK/bdstrategy_slaf | awk '{print substr($3,1)}' )
+
+  # Second SLAF file
+  SLL=$(( 10#$SLL - $SLAFDIFF ))
+  SLL=`perl -e "printf('%3.3i', '$SLL')"`
+  FILE1=$( grep "${SLL}|" $WRK/bdstrategy_slaf_2 | awk '{print substr($3,1)}' )
+
+  echo "Use the following files for SLAF with SLAFLAG:$SLAFLAG"
+  echo "  1:$FILE1"
+  echo "  2:$FILE2"
+
+  ln -sf $FILE1 file1
+  ln -sf $FILE2 file2
+
+fi
+
+# Terminate the namelist
+echo ' /' >> naminterp
+
+Cat_logs naminterp
+
+# Climate file
+CDTG=$( mandtg $DTG + $MLL )
+CM=`echo $CDTG | awk '{print substr($1,5,2)}'`
+ln -sf $CLIMATE/m$CM climate_aladin
+
+# Run the interpolation
+echo "Start interpolation with $INFILE from host model $HOST_MODEL"
+echo "$INFILE points to"
+ls -l $INFILE
+
+$MPPGL $BINDIR/gl_grib_api -lbc $HOST_MODEL $INFILE -o ./tmpfile $GLFLAG -s -n naminterp || exit
+
+mv ./tmpfile $OUTFILE
+
+
+if [ "$SIMULATION_TYPE" == "climate" ];then
+
+ #Interpolation of SST and SIC with land-sea mask
+ #out: SURFSEA.TEMPERA
+
+ echo " "
+ echo "SIMULATION_TYPE=climate "
+ echo "Run gl_grib_api -sst "
+ echo "Output: ECMWF_SST_SIC "
+  
+ AAA=`expr $MLL \/ $BDINT` || AAA="000"
+ AAA=`perl -e "printf('%3.3i', '$AAA')"`
+
+
+ $MPPGL $BINDIR/gl_grib_api -sst $HOST_MODEL $INFILE -o $WRK/ECMWF_SST_SIC$AAA || exit
+
+ if [ ! -f $WRK/ECMWF_SST_SIC$AAA ];then
+  echo " gl_grib_api -sst FAILED"
+ fi
+
+fi
+
+# Normal exit
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

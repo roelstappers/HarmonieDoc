@@ -1,0 +1,81 @@
+#!/bin/bash
+
+#
+# GNSStoOBSOUL: awk program to create OBSOUL.gbgps files from ASCII files 
+# 
+
+. header.sh
+
+cd $WRK
+WDIR=oulan
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+#-----------------------------------------------------------------------
+# Initialisation of HARMONIE environment - directories and other stuff 
+#------------------------------------------------------------------------
+
+. include.ass
+
+
+###########################################################################
+#Use of WHITE LIST for gbgps obs
+
+YYYY=`echo $DTG | awk '{print substr($1,1,4)}'`
+DD=`echo $DTG | awk '{print substr($1,7,2)}'`
+HH=`echo $DTG | awk '{print substr($1,9,2)}'`
+
+DATAPATH=${GNSSPATH:-$OBDIR}
+
+INFILE=GPS${YYYY}${MM}${DD}${HH}
+OUTFILE=OBSOUL.gnss
+
+echo $DATAPATH/$INFILE
+
+if [ -s ${DATAPATH}/${INFILE} ] ; then
+    cp ${DATAPATH}/${INFILE} .
+
+# AWK program ############################################
+
+    echo $YYYY$MM$DD $HH > $OUTFILE
+
+awk '{ DATE = $5*10000 + $6*100 + $7
+       TIME = $8*10000 + $9*100 + $10
+       RABSI=1.69999999999999998E+38
+       NABSI=2147483647
+        IOTP =  1
+        IRLN = 17
+        ZLAT = $2
+        ZLON = $3
+        CLINDIC = $1
+        ZALT = $4
+        IOCH = 110
+        IRFL = 11111
+        IVNM = 128
+        ISTD = 0
+        INLV = 1
+        ZDELT = 15.0
+        ZTD = $12
+        DZTD = $14
+        IFLG=NABSI
+       if (DZTD < 2.5 ) {
+       printf (" %2d %d %7d  %8.5f  %8.5f %10s \n %8d %6d %7.4f %d %5d %d\n %2d %2d %5.4E %6.4f %10d\n",
+IRLN, IOTP,
+IOCH, ZLAT, ZLON, CLINDIC, DATE, TIME, ZALT, INLV, IRFL, ISTD, IVNM, ZDELT, DZTD, ZTD, IFLG)
+}
+      }' $INFILE >> $OUTFILE
+       echo " $OUTFILE created  "
+else
+    touch $OUTFILE
+    echo " empty  $OUTFILE created  "
+fi
+
+
+############################################################################
+
+# Normal exit
+cd ..
+#rm -fr $WDIR
+trap - 0
+exit

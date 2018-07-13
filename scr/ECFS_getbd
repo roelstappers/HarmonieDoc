@@ -1,0 +1,232 @@
+#!/bin/bash
+#
+set -xv
+#
+#####################################################################################
+# Get IFS ENS boundary data from ECFS
+# Data are stored at ec:/zno/dat/ecdiss/<YY>
+#
+# Once untar'd, each file contains data for all members for a single lead time
+#####################################################################################
+# Andrew Singleton, MET Norway, 2016
+#####################################################################################
+#
+# Apply offset to DTG to get correct age boundaries - the boundary data are available for
+# 00 and 12 cycles. To simulate the operational environment 00 data are available from 06
+# and 12 data are available from 18
+#
+  HH=$( mandtg -hour $DTG )
+  H=$((10#$HH))
+  if [ $H -ge 00 -a $H -lt 06 ] ; then
+    let offset=12+$H
+  elif [ $H -ge 06 -a $H -lt 18 ] ; then
+    let offset=$H
+  elif [ $H -ge 18 -a $H -lt 24 ] ; then
+    let offset=$H-12
+  fi
+#
+  dtgBoundary=`mandtg $DTG + -$offset`
+  echo "dtgBoundary is $dtgBoundary"
+  YY=$( mandtg -year $dtgBoundary )
+  MM=$( mandtg -month $dtgBoundary )
+  DD=$( mandtg -day $dtgBoundary )
+  HH=$( mandtg -hour $dtgBoundary )
+  HH4=${HH}00
+#
+###########################################
+# Set directory- and file-names
+###########################################
+#
+# directory on ECFS where the boundary data are kept
+#
+  ecfsDir="ec:/zno/dat/ecdiss"
+#
+# directory for unpacked boundary data for the member
+# (i.e. where the boundary files used by the model are placed)
+# and the filnames (excluding the leadtime)
+#
+  mbrBoundaryDir=$HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbr
+  mbrBoundaryFile=fc$YY$MM${DD}_$HH
+#
+# working directory to copy data from ecfs and untar into
+#
+  workBoundaryDir=$HM_DATA/ECMWF/archive/$YY/$MM/$DD/$HH/mbrALL
+#
+# names of bondary data files on ecfs 
+# (the lead times appear to be randomly distributed between the "main" file
+# and the add file so need to fetch both from ecfs):
+#
+  ecTarFile=G1_$MM$DD${HH}_01.tar
+  ecTarFileAdd=G1_$MM$DD${HH}_01add.tar
+#
+# filename stem after untar'ing (one for each lead time by adding validity datetime to stem)
+  allMembersBoundaryFile=G1E$MM$DD$HH4
+#
+####################################################################
+# Check if boundary files are already there from a previous cycle
+####################################################################
+#
+# Only check mbr000 - assume boundary files for all other members are present
+# if those for mbr000 are present
+#
+# Loop over lead times
+#
+  let LLL=$LL+$offset
+  boundaryLead=0
+  missingFiles=0
+  while [ $boundaryLead -le $LLL ] ; do
+#
+    boundaryLead3=`perl -e "printf('%03d', '${boundaryLead}')"` # 3 digit lead time
+    mbrBoundaryFileLead=${mbrBoundaryDir}000/${mbrBoundaryFile}+${boundaryLead3}
+#
+#   if the file does not exist check for the untar'd file for this lead time
+#
+    if [ ! -f "${mbrBoundaryFileLead}" ] ; then
+#
+#     Get the validity time for this lead time
+#
+      dtgBoundaryLead=`mandtg $dtgBoundary + $boundaryLead`
+#      echo "dtgBoundaryLead is ${dtgBoundaryLead}"
+      validYY=$( mandtg -year $dtgBoundaryLead )
+      validMM=$( mandtg -month $dtgBoundaryLead )
+      validDD=$( mandtg -day $dtgBoundaryLead )
+      validHH=$( mandtg -hour $dtgBoundaryLead )
+      validHH4=${validHH}00
+#
+      allMembersBoundaryFileLead=${workBoundaryDir}/${allMembersBoundaryFile}${validMM}${validDD}${validHH4}1
+#
+#     if the untar'd file does not exist add 1 to missingFiles
+#
+      if [ ! -f "${allMembersBoundaryFileLead}" ] ; then
+#
+        echo "${mbrBoundaryFileLead} ---> NOT FOUND"
+        echo "${allMembersBoundaryFileLead} ---> NOT FOUND"
+        let missingFiles=$missingFiles+1
+#
+    else 
+#
+      echo "${mbrBoundaryFileLead} ---> NOT FOUND"
+      echo "${allMembersBoundaryFileLead} ---> EXISTS"
+#  
+    fi
+#
+    else
+#
+      echo "${mbrBoundaryFileLead} ---> EXISTS"
+#
+    fi
+#
+    let boundaryLead=$boundaryLead+$BDINT
+#
+  done
+#
+#########################################################################################      
+# If there are any missing files, get tar files from ECFS (if necessary) and untar
+#########################################################################################
+#
+  if [ $missingFiles -gt 0 ] ; then
+#
+    echo "No boundary data found for ${dtgBoundary}. Copying from ECFS"
+#
+#   check for tar files - if not on disk, copy from ECFS
+#
+    if [ ! -f "${ecTarFile}" ] ; then
+#
+      if [ ! -d "${workBoundaryDir}" ] ; then
+        mkdir -p ${workBoundaryDir}
+      fi
+#
+      echo "Copying ${ecTarFile} from ${ecfsDir}/${YY}/"
+      ecp ${ecfsDir}/${YY}/${ecTarFile} ${workBoundaryDir}
+#
+#     Abort if the copy from ECFS fails
+#
+      if [ ! -f "${workBoundaryDir}/${ecTarFile}" ] ; then
+        echo "Copying ${ecTarFile} from ${ecfsDir}. File probably not available"
+        exit 1
+      fi
+#
+    fi
+#
+    if [ ! -f "${ecTarFileAdd}" ] ; then
+#
+      if [ ! -d "${workBoundaryDir}" ] ; then
+        mkdir -p ${workBoundaryDir}
+      fi
+#
+      echo "Copying ${ecTarFileAdd} from ${ecfsDir}/${YY}/"
+      ecp ${ecfsDir}/${YY}/${ecTarFileAdd} ${workBoundaryDir}
+#
+#     Abort if the copy from ECFS fails
+#
+      if [ ! -f "${workBoundaryDir}/${ecTarFileAdd}" ] ; then
+        echo "ERROR copying ${ecTarFileAdd} from ${ecfsDir}. File probably not available"
+        exit 1
+      fi
+#
+    fi
+#
+#   Go to the working directory and untar
+#
+    cd ${workBoundaryDir}
+    echo "untar'ing boundary data"
+    tar -xvf ${ecTarFile}
+    tar -xvf ${ecTarFileAdd}
+#
+#   Remove unwanted files and tar files
+#
+    rm -f G1D*
+    rm -f ${ecTarFile}
+    rm -f ${ecTarFileAdd}
+#
+  fi
+#
+##########################################################################
+# Do a final check that allMember files are available for each lead time
+##########################################################################
+#
+  boundaryLead=0
+  missingFiles=0
+  while [ $boundaryLead -le $LLL ] ; do
+#
+#   Get the validity time for this lead time
+#
+    dtgBoundaryLead=`mandtg $dtgBoundary + $boundaryLead`
+#    echo "dtgBoundaryLead is ${dtgBoundaryLead}"
+    validYY=$( mandtg -year $dtgBoundaryLead )
+    validMM=$( mandtg -month $dtgBoundaryLead )
+    validDD=$( mandtg -day $dtgBoundaryLead )
+    validHH=$( mandtg -hour $dtgBoundaryLead )
+    validHH4=${validHH}00
+#
+    allMembersBoundaryFileLead=${workBoundaryDir}/${allMembersBoundaryFile}${validMM}${validDD}${validHH4}1
+#
+#   if the untar'd file does not exist add 1 to missingFiles
+#
+    if [ -f "${allMembersBoundaryFileLead}" ] ; then
+      echo "${allMembersBoundaryFileLead} ---> OK"
+    else
+      echo "${allMembersBoundaryFileLead} ---> NOT FOUND"
+      let missingFiles=$missingFiles+1
+    fi
+#
+    let boundaryLead=$boundaryLead+$BDINT
+#
+  done
+#
+# Abort if there are missing files
+#
+  if [ $missingFiles -gt 0 ] ; then
+#
+    echo "There are $missingFiles missing lead times for boundary date ${dtgBoundary}"
+    exit 1
+#
+  fi
+#
+# final cleanup
+#
+
+trap - 0
+exit
+
+

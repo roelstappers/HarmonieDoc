@@ -1,0 +1,103 @@
+#!/bin/bash
+#
+# Append mars RETRIEVE request to a file
+#
+
+
+typeset SSDATE
+typeset EEDATE
+typeset HO1
+typeset HO2
+typeset OBSP
+typeset MARSFILE
+typeset MARSTYPE
+typeset OBSFILE
+typeset GEOLIM
+
+REQUEST=RETRIEVE
+RANGE=0
+OBSL=0
+GEOLIM="90/-180/-90/180"
+MARSTYPE=OB
+SRCFILE=""
+
+while getopts d:t:r:s:e:a:b:o:m:p:i:z:g:q: opt; do
+  case $opt in
+    s) SSDATE=$OPTARG  ;;
+    e) EEDATE=$OPTARG  ;;
+    d) DATE=$OPTARG  ;;
+    t) TIME=$OPTARG ;;
+    r) RANGE=$OPTARG ;;
+    o) OBSL=$OPTARG  ;; 
+    m) MARSFILE=$OPTARG ;;
+    p) MARSTYPE=$OPTARG ;;
+    i) SRCFILE=$OPTARG ;;
+    z) OBSFILE=$OPTARG ;;
+    g) GEOLIM=$OPTARG ;;
+    q) REQUEST=$OPTARG ;;
+  esac
+done
+
+ 
+ # Area and general settings
+
+cat >> $MARSFILE <<EOF
+$REQUEST, 
+      REPRES   = BUFR,
+      TYPE     = ${MARSTYPE},
+      TIME     = $TIME,
+EOF
+
+
+ # Different requests for AI/OB MARS data
+
+if [ $MARSTYPE = "AI" ];then
+ cat >> $MARSFILE <<EOF
+      STREAM   = LWDA,
+EOF
+
+elif [ $MARSTYPE = "OB" ];then
+ cat >> $MARSFILE <<EOF
+      RANGE    = $RANGE,
+      AREA     = $GEOLIM,
+EOF
+
+ # Special case for IASI
+
+ if [ $OBSL = "IASI" ];then
+  cat >> $MARSFILE <<EOF
+      OBSTYPE  = 240,
+      OBSGROUP = IAS,
+EOF
+ else
+  cat >> $MARSFILE <<EOF
+      OBSTYPE  = ${OBSL},
+EOF
+ fi
+
+else
+  echo "Invalid MARS type. Exiting ..."
+  exit 1
+fi
+
+ # STAGE or normal RETRIVE
+
+if [ $REQUEST = "STAGE" ];then
+ cat >> $MARSFILE <<EOF
+      DATE     = $SSDATE/to/$EEDATE
+EOF
+else
+
+ # RETRIEVE (filter) from BUFR file
+
+ if [ ! -z $SRCFILE ];then
+   cat >> $MARSFILE <<EOF
+      SOURCE   = "$SRCFILE",
+EOF
+ fi
+
+ cat >> $MARSFILE <<EOF
+      DATE     = $DATE,
+      TARGET   = "$OBSFILE"
+EOF
+fi

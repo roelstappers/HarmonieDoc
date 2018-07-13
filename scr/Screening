@@ -1,0 +1,243 @@
+#!/bin/bash
+#-----------------------------------------------------------------------
+# Run screening (configuration 002 of ARPEGE/IFS model):
+# quality control of observation.
+#---------------------------------------------------------------------
+# Inputs:
+#
+#   #--first guess (the same file with 5  different names):
+#     ICMSHMIN1INIT  ICMSHMIN1IMIN  ICMRFMIN10000
+#     ELSCFMIN1ALBC000 ELSCFMIN1ALBC
+#
+#   #--Input/output ODB directory structure
+#     ${d_DB}/ECMA
+#            /ECMA.${base1}
+#            ....
+#
+#   #--Constants and statistics
+#     (1)correl.dat (2)sigmab.dat (3)rszcoef_fmt (4)errgrib
+#     (5)rt_coef_atovs_newpred_ieee.dat
+#     (6)bcor_noaa.dat (7)chanspec_noaa.dat
+#     (8)rmtberr_noaa.dat (9)cstlim_noaa.dat
+#
+# Output:
+#    The quality control information will be put into the
+#    input ODB.
+#-----------------------------------------------------------
+
+. header.sh
+. functions.ksh
+
+My_trap_handler () {
+    Cat_logs NODE.*
+    [ "$RUNNING_MODE" = operational ] && { echo "Screening failed!" >> $WRK/var_oper.dat; }
+}
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "My_trap_handler; Trapbody $WDIR" 0
+
+d_SCREENING=$WRK/$WDIR
+
+#. Start
+. include.ass
+
+#--merge the ODB sub-bases i.e. create an
+#  ECMA virtual base
+# And declare local vars
+
+export d_DB=$WRK/odb
+export d_DBVAR=$WRK/odbvar
+d_DB_OUT=$WRK/odb_ccma
+
+RecreateDir $d_DB_OUT
+
+typeset d_DB
+     
+# -- ODB Merge now is inline before the screening
+
+#-- enter the working dir
+cd ${d_SCREENING}  || exit 1
+
+#--- fetching consts
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+
+ln -s ${HM_LIB}/const/bias_corr/correl.dat  correl.dat
+ln -s ${HM_LIB}/const/bias_corr/sigmab.dat  sigmab.dat
+ln -s ${HM_LIB}/const/bias_corr/rszcoef_fmt rszcoef_fmt
+ln -s ${HM_LIB}/const/bias_corr/errgrib0scr errgrib
+ln -s ${HM_LIB}/const/bias_corr/cstlim_noaa.dat  cstlim_noaa.dat
+ln -s ${HM_LIB}/const/bias_corr/var.amv* .
+
+#--- RADIOSONDE BIAS CORRECTION
+for tabfile in table1 table2 table3;do
+  cp ${HM_LIB}/const/bias_corr/$tabfile .
+done
+
+# RTTOV const
+ln -s ${HM_SAT_CONST}/* .
+ln -sf ${HM_LIB}/nam/IASI_CLDDET.NL .
+ln -sf ./rtcoef_metop_2_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_2_iasi.dat
+ln -sf ./rtcoef_metop_1_iasi_${IASI_RT_COEF}.dat ./rtcoef_metop_1_iasi.dat
+
+# Bias corrections
+if [ $LVARBC = "T" ]; then
+
+  BEG_DIFF=`mandtg $DTG - $DTGBEG`
+  [ "$RUNNING_MODE" = "operational" ] && BEG_DIFF=9999
+
+  if [ "$VARBC_COLD_START" == "yes" -a $BEG_DIFF -gt 30 -o "$VARBC_COLD_START" == "no" ]; then
+
+    if [ ! -s $WRK/VARBC.cycle ]; then
+      echo "You don t have VARBC table from the earlier run please check the content of your WORKDIR "
+      exit 1
+    fi
+    cp $WRK/VARBC.cycle  ./VARBC.cycle
+
+  fi 
+
+fi
+
+#--- Prepare for the merge inline
+InitDir $d_DB $d_DBVAR || exit 1
+
+#--- check odb
+CheckDir ${d_DBVAR}
+
+#---  ODB settings for screening
+export ODB_CMA=ECMA
+export ODB_SRCPATH_ECMA=${d_DBVAR}/ECMA
+export ODB_DATAPATH_ECMA=${d_DBVAR}/ECMA
+export ODB_ANALYSIS_DATE=${YMD}
+export ODB_ANALYSIS_TIME=${HH}0000
+export ODB_MERGEODB_DIRECT=1
+export ODB_ECMA_CREATE_POOLMASK=1
+export ODB_ECMA_POOLMASK_FILE=${d_DBVAR}/ECMA/ECMA.poolmask
+  
+#
+#--- For Off-line observation perturbation the step below is
+#--- already done in Pertobs script. No need to re-do it again.
+#
+      
+if [ "$PERTATMO" != "ECMAOFF" ]; then
+
+  #--- prepare db dir
+  RecreateDir ${d_DBVAR}/ECMA
+  #-- create merged ioassign file
+  cd ${d_DBVAR}/ECMA
+  liste=""
+  for base in ${types_BASE}; do
+    liste=${liste}" -t "${base}
+  done
+  echo "liste is $liste"
+  $HM_LIB/scr/merge_ioassign -d ${d_DBVAR} ${liste} || \
+    { echo "MERGE_IOASSIGN failed" ; exit 1 ; } 
+  cd -
+fi
+
+export ODB_SRCPATH_ECMA=${d_DBVAR}/ECMA
+export ODB_DATAPATH_ECMA=${d_DBVAR}/ECMA
+
+#---  ODB settings for shuffle after screening
+
+if [ $ODB_CCMA_CREATE_DIRECT -eq 1 ];then
+
+  $MKDIR ${d_DB_OUT}/CCMA
+  export ODB_SRCPATH_CCMA=${d_DB_OUT}/CCMA
+  export ODB_DATAPATH_CCMA=${d_DB_OUT}/CCMA
+  export ODB_CCMA_POOLMASK_FILE=${d_DB_OUT}/CCMA/CCMA.poolmask
+  export IOASSIGN=${d_DB_OUT}/CCMA/IOASSIGN
+  export ODB_FEBINPATH=${BINDIR}
+  cd ${d_DB_OUT}/CCMA
+  rm -f ${IOASSIGN}
+  if [[ ${NPROC} -lt 32 ]] || [[ $ODB_IO_METHOD -eq 4 ]] ; then
+    IOBUF=8m
+  else
+    IOBUF=1m
+  fi
+  create_ioassign -l "CCMA" -b 8m -n ${NPROC}
+  grep ECMA ${d_DBVAR}/ECMA/IOASSIGN >> ${IOASSIGN} || true
+  cd -
+else
+  export IOASSIGN=${d_DBVAR}/ECMA/IOASSIGN
+fi
+
+cd ${d_SCREENING}
+
+#--- ODB Debug
+if [ $ODB_VERBOSE_OUT -eq 1 ];then
+  export ODB_TRACE_PROC=-1
+  export ODB_TRACE_FILE=${d_SCREENING}/trace.%d
+  export ODB_TRACE_FLUSH_FREQ=1
+  export DR_HOOK=1
+fi
+
+NAMELIST=$WRK/$WDIR/namelist_screening
+Get_namelist screening $NAMELIST
+
+#
+# ** Note that for in-line perturbation using the ECMAIN technique,
+# ** LPERTURB should be .true., which is set in config_exp.h
+#
+
+LPERTURB=F
+[[ $PERTATMO == "ECMAIN" ]] && LPERTURB=T
+
+is_coldstart=$( cat $WRK/is_coldstart )
+if [ $is_coldstart != "yes" -a "${INITCLOUDFRACTI-yes}" = yes -a $PHYSICS = "arome" ]; then
+   ICLOUDFRACTI="1"
+   LCLOUDFRACTI=".TRUE."
+else
+   ICLOUDFRACTI="-1"
+   LCLOUDFRACTI=".FALSE."
+fi
+
+#--- prepare namelist
+sed -e "s/NBPROC/${NPROC}/g"   \
+    -e "s/NPROCX/${NPROCX}/g"  \
+    -e "s/NPROCY/${NPROCY}/g"  \
+    -e "s/ICLOUDFRACTI/$ICLOUDFRACTI/g" \
+    -e "s/LCLOUDFRACTI/$LCLOUDFRACTI/g" \
+    -e "s/NBZONVAR_EW=NBZONVAR_EW/NBZONVAR_EW=$NBZONVAR_EW/g" \
+    -e "s/LVARBC=LVARBC/LVARBC=$LVARBC/g"  \
+    -e "s/NCONF=NCONF/NCONF=002/g" \
+    -e "s/CNMEXP=CNMEXP/CNMEXP=\"MIN1\"/g" \
+    -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+    -e "s/TSTEP=TSTEP/TSTEP=$TSTEP/g" \
+    -e "s/LSLAG=LSLAG/LSLAG=.TRUE./g" \
+    -e "s/LPERTURB=LPERTURB/LPERTURB=$LPERTURB/g" \
+    -e "s/NAEMEMBER=NAEMEMBER/NAEMEMBER=$ENSMBR/g" \
+    $NAMELIST > fort.4 || { echo "Sorry, no namelist!" ; exit 1 ; }
+
+#--- fetching the guess
+ln -sf $WRK/first_guess ICMSHMIN1INIT
+
+ln -sf ICMSHMIN1INIT ICMSHMIN1IMIN
+ln -sf ICMSHMIN1INIT ICMRFMIN10000
+ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC000
+ln -sf ICMSHMIN1INIT ELSCFMIN1ALBC
+
+[[ -s ./ICMSHMIN1INIT ]] || { echo "Sorry, no first-guess!" ; exit 1 ; }
+
+Cat_logs fort.4
+
+#--- running the master
+$MPPEXEC $BINDIR/$MODEL || exit
+
+Cat_logs NODE.001_01
+
+[[ -s drhook.prof.1 ]] && { tar cvf ${TASK}_prof.tar drhook.prof.* ; mv ${TASK}_prof.tar $ARCHIVE ; }
+
+if [ $LVARBC = "T" ]; then
+  cp ./VARBC.cycle $WRK/VARBC.cycle
+fi
+
+# Normal exit
+cd $WRK
+rm -fr $WDIR
+trap - 0
+exit

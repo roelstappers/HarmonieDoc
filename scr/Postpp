@@ -1,0 +1,96 @@
+#!/bin/bash
+
+#
+# Postprocess output by using FULLPOS
+#
+
+. header.sh
+. include.ass
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+
+if [ "$#" -eq "2" ]; then
+  PPH=$1
+  TYPE=$2
+  if [ "$PPH" -lt "0" ] ; then
+    echo "ERROR: The argument $PPH to be used for making grib files is outside the forecast range"
+    exit 1
+  fi
+else
+  echo "Usage: $0 FC_HOUR/STEP PP_TYPE"
+  exit 1
+fi
+
+#
+# Local settings
+#
+
+# Finding the month we should use as climate for Fullpos
+# When we do Post-processing for minutely output, we do it for
+# PPH-1 < time <= PPH. This means all inter-mediate time steps will 
+# have the same month as PPH
+if [ $TFLAG = "min" ] ; then
+ set +e
+ MLL=`expr $PPH \* $TSTEP \/ 3600`
+ set -e
+else
+ MLL=`perl -e "printf('%3.3i', '$PPH')"`
+fi
+CDTG=$( mandtg $DTG + $MLL )
+CM=`echo $CDTG | awk '{print substr($1,5,2)}'`
+
+#  Get namelist name
+NAMELIST=$WRK/$WDIR/namelist_pp
+Get_namelist pp $NAMELIST
+
+# Update namelist
+sed -e "s/NBPROC/$NPROC/g"  \
+-e "s/NPROCX/$NPROCX/g" \
+-e "s/NPROCY/$NPROCY/g" \
+$NAMELIST > fort.4 || exit
+
+# Create the namelist
+export FULLPOS_TYPE=offline
+export FULLPOS_LL=$MLL
+perl -S Select_postp.pl || exit 
+
+ln -sf select_p0 xxt00000000
+
+# Make a list of the choices
+ls -1 xxt* > dirlst
+
+Cat_logs fort.4 select_p0
+
+# Input geometry
+ln -sf  $CLIMDIR/m$CM Const.Clim
+
+# Output geometry
+ln -sf  $CLIMDIR/m$CM const.clim.$DOMAIN
+
+
+# Input file
+M=`perl -e "printf('%4.4i', '$PPH')"`
+ln -sf $ARCHIVE/ICMSH${CNMEXP}+$M ICMSH${CNMEXP}INIT${PPH}
+ln -sf ICMSH${CNMEXP}INIT${PPH} ICMSH${CNMEXP}INIT 
+
+ln -sf $HM_LIB/const/rrtm_const/MCICA MCICA
+ln -sf $HM_LIB/const/rrtm_const/RADSRTM RADSRTM
+
+export DR_HOOK=1
+$MPPEXEC $BINDIR/$MODEL || exit 1
+
+Cat_logs NODE.001_01
+
+mv PF${CNMEXP}${DOMAIN}+0000 $ARCHIVE/PF${CNMEXP}${DOMAIN}+${M}
+
+echo "#Postpp#${PPH}#${TYPE}#" >> $WRK/registry_postpp
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

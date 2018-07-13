@@ -1,0 +1,151 @@
+#!/bin/bash
+#=============================================
+# Merge odb sub-bases for ECMA dbtype for
+#             
+#             al28t1
+#
+# Switches:  -d database_path
+#            -t number_of_pools
+#
+# ODB_IO_METHOD must be set in advance!!
+#
+# Author: Dominique Puech, MF 
+# Adapted to HMS: Sandor Kertesz, HMS, 31-Aug-2004
+#
+#--- Adapted to cy29t2 for ECMW hpcd configuration
+#--- A.Storto 15.07.06
+#
+#=============================================
+
+#--- $PROC_IOASSIGN is defined in the main include file
+
+set -e
+#. ${MAIN_CONFIG_FILE}
+
+set -v
+
+ ############################################
+ ############################################
+ ##                                        ##
+ ##           MERGE  IOASSIGN              ##
+ ##                                        ##
+ ############################################
+ ############################################
+
+set +v
+
+
+dbname=ECMA
+
+FLAGS="d:t:"
+while getopts $FLAGS option
+do
+  case $option in
+    d) dir="$OPTARG";;
+    t) alltasks="$alltasks $OPTARG";;
+  esac
+done
+
+unset OPTIND
+
+cd ${dir}/${dbname}
+if [ "$alltasks" = "" ]; then
+  alltasks=$( \ls -C1pd $dbname.* | awk -F/ '{print $1}' | sed "s/^$dbname\.//g" | sort -u)
+fi
+
+ddfile=${dir}/${dbname}.$(echo $alltasks | cut -d" " -f1)/$dbname.dd
+schfile=${dir}/${dbname}.$(echo $alltasks | cut -d" " -f1)/$dbname.sch
+tables=$(egrep "^@" $ddfile | awk '{print $1}' | perl -pe 's#\@# #g;')
+
+cd ${dir}/${dbname}
+cp $schfile .
+
+[[ ! -f IOASSIGN ]] || mv IOASSIGN IOASSIGN.old
+
+npools=0 ; realtasks=""
+for task in $alltasks
+do
+  taskdir=${dir}/${dbname}.$task
+  if [ ! -d $taskdir ]; then
+    echo "Warning : la base $dbname.$task n'existe pas"
+    continue
+  fi
+  realtask=$realtask" "$task
+  ddfile_task=$taskdir/$dbname.dd
+  if [ ! -f $ddfile_task ]; then
+    echo "Erreur : fichier $dbname.dd de $dbname.$task n'existe pas"
+    exit1
+  fi
+  typeset ncount=$(head -5 $ddfile_task | tail -1)
+  ((npools+=$ncount))
+done
+
+echo "npools=$npools"
+
+alltasks=$realtask
+
+io_method=$(head -1 $ddfile | awk 'BEGIN {n=0;} {if (NF >= 3) n=$3;} END {print n;}')
+if [ "$io_method" = 4 ] ; then  # preparation iomap
+  echo "2" > $dbname.iomap
+fi
+
+if [[ $npools -lt 32 ]] || [[ $io_method -eq 4 ]] ; then
+  iodef="-r 8m -w 8m -p 8m -e 8m"  
+else
+  iodef="-r 1m -w 1m -p 1m -e 1m"
+fi
+
+$MPPGL $BINDIR/IOASSIGN -s -a \$ODB_SRCPATH_$dbname/$dbname.dd $dbname           >> IOASSIGN
+$MPPGL $BINDIR/IOASSIGN -s -a \$ODB_SRCPATH_$dbname/$dbname.sch $dbname.sch      >> IOASSIGN
+$MPPGL $BINDIR/IOASSIGN -s -a \$ODB_SRCPATH_$dbname/$dbname.flags $dbname.flags  >> IOASSIGN
+$MPPGL $BINDIR/IOASSIGN -s -a \$ODB_SRCPATH_$dbname/$dbname.iomap $dbname.iomap  >> IOASSIGN
+
+tbl=_xxx_
+p=0
+template=__template__.$$ ; cat /dev/null > $template
+echo "Procedure : $0"
+for task in $alltasks
+do
+  d=${dir}/${dbname}.$task
+  ddfile=$d/$dbname.dd
+
+np=$( head -5 $ddfile | tail -1 )
+echo "np=$np , npools=$npools"
+
+  ((psta = p + 1))
+  ((pend = p + np))
+  $MPPGL $BINDIR/IOASSIGN -s -x -n $np -S $psta $iodef \
+         -a \$ODB_DATAPATH_$dbname/../${dbname}.$task/%d/$tbl \
+         $dbname.$tbl.%d >> $template
+  if [ "$io_method" = 4 ] ; then  # preparation iomap
+    cp $dir/$dbname.$task/$dbname.iomap $dir/$dbname.$task/$dbname.iomap.b2o
+    echo "\$ODB_SRCPATH_$dbname/../$dbname.$task/$dbname.iomap" >> $dbname.iomap
+  fi
+  p=$pend
+  echo " traitement $dbname.$task ; p=$p" 
+done
+
+for tbl in $tables
+do
+  perl -pe "s/_xxx_/$tbl/g" < $template >> IOASSIGN
+done
+rm -f $template
+
+head -4 $ddfile > ${dir}/${dbname}/$dbname.dd
+echo $p >> ${dir}/${dbname}/$dbname.dd
+
+#--- NEW
+nb=$(expr $(cat $ddfile | wc -l) - 5)
+tail -$nb $ddfile >> ${dir}/${dbname}/$dbname.dd
+
+#--- OLD
+#echo $(head -6 $ddfile_task | tail -1) >> ${dir}/$dbname/$dbname.dd
+#perl -ne 'if (/^\d+ @/) { s/^(\d+ @\w+\b).*/\1 -1/; print;}' $ddfile  >> ${dir}/$dbname/$dbname.dd
+
+set -v
+
+#================================#
+#      END OF MERGE_IOASSIGN     #
+#================================#
+
+set +v

@@ -1,0 +1,210 @@
+#!/bin/bash
+trap 'exit 159' 0
+Start=${Start-Start}
+
+timestamp=
+if tty -s
+then
+    : nix
+else
+    timestamp=`date +"%y-%m-%d %T"`
+fi
+
+say ()   { echo "$timestamp Harmonie:" $* ; }
+abort () { echo "$timestamp Harmonie:" $* ; exit ; }
+
+
+# =====================================export variables
+export DTG DTGBEG DTGEND LL PLAYFILE
+
+case ${1?"no action specified"} in
+   start|Start|resume|continue|install|Install|testbed|obsmon|obsmonprod|mitraillette)
+      resume=
+      [ $1 = resume ] && { resume=1; CLEAN=false; export CLEAN; }
+      if [ $1 = continue ]; then
+         [ -r $HM_WD/progress.log ] || abort '"continue"' needs but cannot read $HM_WD/progress.log.
+         . $HM_WD/progress.log
+         CLEAN=false; export CLEAN
+	 # if DTG was given on command line it overrides that from progress.log
+	 if [ ${DTG_CLA-$DTG} -ne $DTG ]; then
+	     DTG=$DTG_CLA
+	     CLEAN=true    # make sure progress.log is recreated
+	     export DTGBEG=${DTGBEG-$DTG}   # should be kept
+	 fi
+      fi
+      say using $Start to start an experiment.
+      if [ "$2" ]
+      then
+         length=`echo $2|awk '{print length($1)}'`
+         if [ $length -eq 1 -o $length -eq 2 ]
+         then
+            $Start resume=$resume HLUTC=$2 || exit
+         elif [ $length -eq 8 ]
+         then
+            $Start NOW=$2 HLUTC=`echo $2|awk '{print substr($1,length($1)-1,2)}'` resume=$resume || exit
+         else
+            abort cannot start. invalid DTG or HLUTC specified.
+         fi
+      else
+
+         if [ $1 = install ] || [ $1 = Install ] || [ $1 = testbed ] || [ $1 = mitraillette ]; then
+            if [ -r $HM_WD/progress.log ] ; then
+              . $HM_WD/progress.log
+              CLEAN=false; export CLEAN
+            else
+              DTG=2008061600
+            fi 
+
+            if [ $1 = testbed ] ; then
+               # Run HARMONIE testbed
+               PLAYFILE=${PLAYFILE-testbed}
+               CHILDEXP=${EXP}_child
+            elif [ $1 = mitraillette ] ; then
+               # Run mitraillette
+               PLAYFILE=${PLAYFILE-mitraillette}
+            else
+               # Install HARMONIE
+               PLAYFILE=${PLAYFILE-Install_rootpack}
+            fi
+         elif [ $1 = obsmon -o $1 = obsmonprod ]; then
+            # Run HARMONIE testbed
+            PLAYFILE=${PLAYFILE-obsmon}
+
+            if [ $1 = obsmon ]; then
+              DTG=${DTG?"Give date/time group DTG in environment before Harmonie obsmon"} # yymmddhh
+              [ `expr $DTG : '.*'` -lt 10 ] && { echo wrong DTG: $DTG '- no century?'; exit; }
+            else
+              [ -r $HM_WD/progress.log ] || abort '"continue"' needs but cannot read $HM_WD/progress.log.
+              . $HM_WD/progress.log
+              [ -r $HM_WD/progressPP.log ] || abort '"continue"' needs but cannot read $HM_WD/progressPP.log.
+              . $HM_WD/progressPP.log
+              CLEAN=false; export CLEAN
+              echo $*
+              set -f; perl -S Actions.pl $*
+              trap 0
+              exit
+            fi
+         else
+            DTG=${DTG?"Give date/time group DTG in environment before Harmonie start"} # yymmddhh
+            [ `expr $DTG : '.*'` -lt 10 ] && { echo wrong DTG: $DTG '- no century?'; exit; }
+         fi
+
+         $Start resume=$resume || exit
+      fi
+      ;;
+   ps)
+      ps -wwx  2>/dev/null || ps -fle | awk '$3=="'$USER'"'
+      ;;
+   help)
+      if [ "$2" ]
+      then
+          Whatis `type $2|awk -F/ '/ is /{print $NF;exit};{exit 1}'| tr -d '()'`||abort no $2 in $PATH
+      else
+          Whatis `type Harmonie|awk -F/ '/ is /{print $NF;exit};{exit 1}'| tr -d '()'`||abort no Harmonie in $PATH
+      fi
+      ;;
+   sh)
+      if [ $# -lt 2 ]
+      then
+         abort sh requires argument'(s)'
+      fi
+      shift
+      eval $*
+      ;;
+   stat*)
+      exp=${EXP-OPR}
+      hm_wd=${HM_WD-$HOME/$exp}
+      progress=${PROGRESS-$hm_wd/progress.log}
+      environment=${SETENV-$hm_wd/ENVIRONMENT}
+      if [ $COMPCENTRE = ECMWF ]
+      then
+         scan='Scan_ecfile -nopw'
+         frmt='sort'
+      else
+         scan='ls -lt'
+         frmt='head -20'
+      fi
+      if [ -r $environment ]
+      then
+         . $environment
+      else
+	 abort cannot status a non-started experiment.
+      fi
+
+      case ${2?"status requires argument"} in
+	 compl* )
+		  say checking data base for completed experiments
+		  Completed MODEL=HARMONIE SETENV=$environment | awk '{print "   " $0}';;
+         wa*|ob*)
+                  say observations for experiment $exp in ${OBDIR?"no observation directory"}.
+                  echo `eval $scan $OBDIR | grep 'ob' | eval $frmt` ;;
+         ra*|bo*)
+                  say boundaries for experiment $exp in ${BDDIR?"no boundary directory"}.
+                  echo `eval $scan $BDDIR | egrep 'm[fia]' | eval $frmt` ;;
+         cl*    )
+                  say climate files for experiment $exp in ${CLDIR?"no climate files directory"}.
+                  echo `eval $scan $CLDIR | egrep 'cl|[cf]c' | eval $frmt` ;;
+         ve*|fi*)
+                  say GRIB field output for experiment $exp in ${GVDB?"no GRIB field database"}.
+                  echo `eval $scan $GVDB | grep 'LAMH_FMT_.*_AB' | eval $frmt` ;;
+         ti*    )
+                  say time series output for experiment $exp in ${TRDB?"no time series database"}.
+                  echo `eval $scan $TRDB | grep 'LAMH_T.A_.*_TW' | eval $frmt` ;;
+         pr*    )
+                  if [ -r $progress -a -s $progress ]
+                  then
+                     say progress for experiment $exp.
+                     cat $progress | awk '{print "   " $0}'
+                  else
+                     abort no progress for a non-started experiment.
+                  fi;;
+      esac
+      ;;
+   [Pp]rint[Vv]ar)
+      shift
+      environment=${SETENV-$HM_WD/ENVIRONMENT}
+      [ -r $environment ] && . $environment
+      for arg
+      in $*
+      do
+         argval=`eval echo \\\$$arg`
+         echo "$arg="$argval
+      done
+      ;;
+   m[Xx][Cc][Dd][Pp]|mon)
+      shift
+      cd $HM_DATA
+
+      if [ "$SCHEDULER" == "ECFLOW" ]; then
+          ## Recover original HARMONIE system environment
+	  if [ ! -s "$ENV_SYSTEM" ]; then
+	      echo "FATAL ERROR: HARMONIE system environment file '$ENV_SYSTEM' not found!"
+	      exit 1
+	  fi
+	  ecflowui=${ECFLOWUI:-ecflowview}
+	  . $ENV_SYSTEM 1>/dev/null 2>&1
+	  ps -u $USER | grep -q $ecflowui
+	  if [ $? -ne 0 ]; then
+	      set -f; nohup $ecflowui 1>../$ecflowui.log 2>&1 &
+	      echo "$ecflowui started in the background, output in $HM_DATA/../$ecflowui.log";
+	  else
+	      echo "$ecflowui seems to be running already ... ?"
+	  fi
+      else
+	  mSMS_env=./.mSMS_env_sh
+	  if [ -s $mSMS_env ]; then
+	      echo "Sourcing environment of $SCHEDULER"
+              . $mSMS_env  1>/dev/null 2>&1
+	  fi
+	  set -f; nohup ${PERL_TK-perl} -S mXCdp.pl $* 1>mXCdp$$.log 2>&1 &
+	  echo "mXCdp.pl started in the background, output in $HM_DATA/mXCdp$$.log"
+      fi
+      ;;
+   *)
+      echo $*
+      set -f; perl -S Actions.pl $*
+      ;;
+esac
+
+trap 0
+exit

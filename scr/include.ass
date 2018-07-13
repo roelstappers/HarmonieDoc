@@ -1,0 +1,597 @@
+#
+# Assimilation configurations for HARMONIE
+#
+
+#---------------------------------------------------
+# B matrix related files
+#---------------------------------------------------
+#
+# f_JBBAL : File for background statistics balances
+# f_JBCV  : File for background statistics covariances
+# JBDIR   : Directory for background statistics files if they are not found under HM_LIB/const/jb_data
+#           This is mainly used at ECMWF where the files are stored on ECFS
+#
+
+# DOMAIN      FILES
+# SCANDINAVIA    : stabfiltn_SCAALD_20060920_168.bal.gz
+#                  stabfiltn_SCAALD_20060920_168.cv.gz
+# (For extension zone of 11 points, data derived from ensemble downscaling)
+# SCANDINAVIA    : old strfun OLDSTRFUN
+#                  stabfiltn_SCANDINAVIA_20060801_89.bal.gz
+#                  stabfiltn_SCANDINAVIA_20060801_89.cv.gz
+# (For extension zone of 11 points, data derived from NMC downscaling)
+# SCANWIDE       : stabfiltn_SCWALD_20060920_168.bal.gz
+#                  stabfiltn_SCWALD_20060920_168.cv.gz
+# (For extension zone of 63 points, data derived from ensemble downscaling)
+# SCANDINAVIA_5.5: stabfiltn_SCANDINAVIA_5.5_20060920_168.bal.gz
+#                  stabfiltn_SCANDINAVIA_5.5_20060920_168.cv.gz
+# (For ALARO physics, extension zone of 11 points)
+# SCANDLEXT_5.5  : stabfiltn_LEXT_20060920_168.bal.gz
+#                  stabfiltn_LEXT_20060920_168.cv.gz
+# DENMARK        : stabfiltn_denmark_20060920_168.bal.gz
+#                  stabfiltn_denmark_20060920_168.cv.gz
+# NORWAY         : stabfiltn_NORWAY_00000000_174.bal.gz 
+#                  stabfiltn_NORWAY_00000000_174.cv.gz
+# RCR_POLAR      : stabfiltn_RCR_POLAR_20060920_124.bal.gz
+#                  stabfiltn_RCR_POLAR_20060920_124.cv.gz
+# NORWAY_5.5     : stabfiltn_NORWAY55_128.bal.gz
+#                  stabfiltn_NORWAY55_128.cv.gz 
+# IBERIA         : stabfiltn_ensIB11_2006092000_136.bal.gz
+#                  stabfiltn_ensIB11_2006092000_136.cv.gz
+# IBERIA_8       : stabfiltn_dem_IBERIA_8Km_2009120100_111.bal.gz
+#                : stabfiltn_dem_IBERIA_8Km_2009120100_111.cv.gz
+# IBERIA_2.5     : stabfiltn_dem_IBERIA_arome2.5Km_2009060100_175.bal.gz
+#                : stabfiltn_dem_IBERIA_arome2.5Km_2009060100_175.cv.gz
+# IBERIAxxm_2.5  : stab_structure_1_2012013118_248.bal.gz
+#                : stab_structure_1_2012013118_248.cv.gz
+# IBERIAxl_2.5   : stab_IBERIAxl_2.5_2012010606_248.bal.gz
+#                : stab_IBERIAxl_2.5_2012010606_248.cv.gz
+#                : stab_IBERIAxl_2.5_2012090106_240.bal.gz
+#                : stab_IBERIAxl_2.5_2012090106_240.cv.gz
+# CANARIAS_2.5   : stab_CANARIAS_2.5_2012011006_256.bal.gz
+#                : stab_CANARIAS_2.5_2012011006_256.cv.gz
+#                : stabfiltn_dem_IBERIA_arome2.5Km_2009060100_175.cv.gz
+# FINLAND_2.5    : stabfiltn_FINLAND65_20060920_168.bal.gz
+#                : stabfiltn_FINLAND65_20060920_168.cv.gz
+# IRELAND_2.5    : stabfiltn_ireland25_20060920_168.bal.gz
+#                : stabfiltn_ireland25_20060920_168.cv.gz
+# IRELAND_15.0   : stabfiltn_ireland150_20060920_168.bal.gz
+#                : stabfiltn_ireland150_20060920_168.cv.gz
+# TEST_11        : stabfiltn_TEST_11.cv.gz      Test structure functions for test domain
+#                  stabfiltn_TEST_11.bal.gz     Test structure functions for test domain
+# TEST_11_BIG    : stabfiltn_TEST_11_BIG.cv.gz  Test structure functions for test domain
+#                  stabfiltn_TEST_11.BIG.bal.gz Test structure functions for test domain
+# TEST_8         : stabfiltn_TEST_8.cv.gz       Test structure functions for test domain
+#                  stabfiltn_TEST_8.bal.gz      Test structure functions for test domain
+# TEST_2.5       : stabfiltn_TEST_2.5.cv.gz     Test structure functions for test domain
+#                  stabfiltn_TEST_2.5.bal.gz    Test structure functions for test domain
+# METCOOP25      : stabfiltn_MetCoOpHires1_20060920_168.bal.gz
+#                : stabfiltn_MetCoOpHires1_20060920_168.cv.gz
+
+export f_JBCV f_JBBAL JBDIR
+
+if [ ${f_JBCV:-"undef"} != undef -a ${f_JBBAL:-"undef"} != "undef" -a ${JBDIR:-"undef"} != "undef" ] ; then
+
+  #
+  # Check on JB files and their location if defined in config_exp.h
+  #
+
+  echo 
+  echo "Use user given JB statistics files"
+  echo "f_JBCV=$f_JBCV"
+  echo "f_JBBAL=$f_JBBAL"
+  echo "JBDIR=$JBDIR"
+  echo 
+
+else
+
+ #
+ # Set default names if interpolation is requested
+ #
+if [ "$JB_INTERPOL" == "yes" ]; then
+  f_JBCV=${f_JBCV:-stabfiltn_${DOMAIN}_${VLEV}_jbconv.cv}
+  f_JBBAL=${f_JBBAL:-stabfiltn_${DOMAIN}_${VLEV}_jbconv.bal}
+  JBDIR=${JBDIR:-"ec:/hirlam/harmonie_jbdata"}
+else   
+  f_JBCV=undefined
+  f_JBBAL=undefined
+fi
+
+ # Domain specific settings for generated structure functions
+
+ if [ "$DOMAIN" = SCANDINAVIA ] ; then
+  if [ "${OLDSTRFUN-no}" = no ]; then
+   f_JBCV=stabfiltn_SCAALD_20060920_168.cv
+   f_JBBAL=stabfiltn_SCAALD_20060920_168.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+  else
+   f_JBCV=stabfiltn_SCANDINAVIA_20060801_89.cv
+   f_JBBAL=stabfiltn_SCANDINAVIA_20060801_89.bal
+   JBDIR=${JBDIR-"ec:/snh/HARMONIE/const/jbdata"}
+  fi
+elif [ "$DOMAIN" = SCANWIDE ]; then
+   f_JBCV=stabfiltn_SCWALD_20060920_168.cv
+   f_JBBAL=stabfiltn_SCWALD_20060920_168.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+elif [ "$DOMAIN" = DENMARK ]; then
+   f_JBCV=stabfiltn_denmark_20060920_168.cv
+   f_JBBAL=stabfiltn_denmark_20060920_168.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+elif [ "$DOMAIN" = DKCOEXP ]; then
+   f_JBCV=stabfiltn_DKCOEXP_6H_20110801_248.cv
+   f_JBBAL=stabfiltn_DKCOEXP_6H_20110801_248.bal
+   JBDIR=${JBDIR-"ec:/smx/jb_data"}
+elif [ "$DOMAIN" = DENMARK ]; then
+   f_JBCV=stabfiltn_denmark_20060920_168.cv
+   f_JBBAL=stabfiltn_denmark_20060920_168.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+elif [ "$DOMAIN" = DKA ]; then
+   if [ "$GRID_TYPE" = CUBIC ]; then
+      f_JBCV=stab_DKA_EDA_CUBIC_2013081500_164.cv
+      f_JBBAL=stab_DKA_EDA_CUBIC_2013081500_164.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/DKA/CUBIC/"}
+   elif [ "$GRID_TYPE" = QUADRATIC ]; then
+      f_JBCV=stab_DKA_EDA_QUA_2013081500_164.cv
+      f_JBBAL=stab_DKA_EDA_QUA_2013081500_164.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/DKA/QUADRATIC/"}
+   else
+      f_JBCV=stab_enda_DKA_2013082500_368.cv
+      f_JBBAL=stab_enda_DKA_2013082500_368.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/dka_enda8/"}
+   fi
+elif [ "$DOMAIN" = NEA ]; then
+   if [ "$GRID_TYPE" = CUBIC ]; then
+      f_JBCV=stab_NEA_EDA_CUB_2013081500_164.cv
+      f_JBBAL=stab_NEA_EDA_CUB_2013081500_164.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/NEA/CUBIC"}
+   else
+      # strfun derived by downscaling, also for cubic grid 
+      f_JBCV=stab_NEA_2012010100_120.cv
+      f_JBBAL=stab_NEA_2012010100_120.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/NEA/201604"}
+   fi 
+elif [ "$DOMAIN" = IGA ]; then
+   if [ "$GRID_TYPE" = QUADRATIC ]; then
+      f_JBCV=stab_IGA_EDA_EXP2_2013081500_328.cv
+      f_JBBAL=stab_IGA_EDA_EXP2_2013081500_328.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/IGA/QUADRATIC/"}
+   else
+      #f_JBCV=stab_IGA_JB1_EXP1_2012010106_152.cv
+      #f_JBBAL=stab_IGA_JB1_EXP1_2012010106_152.bal
+      #JBDIR=${JBDIR-"ec:/nhz/strfun/IGA/20160417"}
+      f_JBCV=stab_IGA_EDA_EXP_2013081500_360.cv
+      f_JBBAL=stab_IGA_EDA_EXP_2013081500_360.bal
+      JBDIR=${JBDIR-"ec:/nhz/strfun/IGA/20160517"}
+   fi
+elif [ "$DOMAIN" = SCANDINAVIA_5.5 ]; then
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+   if [ "$VLEV" = HIRLAM_60 ]; then
+      f_JBCV=stabfiltn_SCANDINAVIA_5.5_20060920_168.cv
+      f_JBBAL=stabfiltn_SCANDINAVIA_5.5_20060920_168.bal
+    elif [ "$VLEV" = 65 ]; then
+      f_JBCV=stabfiltn_ALR65_20060920_168.cv
+      f_JBBAL=stabfiltn_ALR65_20060920_168.bal
+    fi
+elif [ "$DOMAIN" = SCANDLEXT_5.5 ]; then
+   JBDIR=${JBDIR-"ec:/snh/HARMONIE/const/jbdata"}
+   f_JBCV=stabfiltn_LEXT_20060920_168.cv
+   f_JBBAL=stabfiltn_LEXT_20060920_168.bal
+elif [ "$DOMAIN" = SWEDEN_2.5 ]; then
+   JBDIR=${JBDIR-"ec:/sur/jbdata"}
+   f_JBCV=stabfiltn_Sweden25_int_128.cv
+   f_JBBAL=stabfiltn_Sweden25_int_128.bal
+elif [ "$DOMAIN" = NORWAY ]; then
+   JBDIR=${JBDIR-"ec:/snh/HARMONIE/const/jbdata"}
+   f_JBCV=stabfiltn_NORWAY_00000000_174.cv
+   f_JBBAL=stabfiltn_NORWAY_00000000_174.bal
+elif [ "$DOMAIN" = RCR_POLAR ]; then
+   JBDIR=${JBDIR-"ec:/snh/HARMONIE/const/jbdata"}
+   f_JBCV=stabfiltn_RCR_POLAR_20060920_124.cv
+   f_JBBAL=stabfiltn_RCR_POLAR_20060920_124.bal
+elif [ "$DOMAIN" = NORWAY_5.5 ]; then
+   JBDIR=${JBDIR-"ec:/snh/HARMONIE/const/jbdata"}
+   f_JBCV=stabfiltn_NORWAY55_128.cv
+   f_JBBAL=stabfiltn_NORWAY55_128.bal
+elif [  "$DOMAIN" = NORWAY_4KM ]; then
+   JBDIR=ec:/sbt/harmonie/Const/ALR_60L_HIRL
+   f_JBCV=stabfiltn_NORWAY4KM_168.cv
+   f_JBBAL=stabfiltn_NORWAY4KM_168.bal
+elif [ "$DOMAIN" = IBERIA_8 ]; then
+   JBDIR=${JBDIR-"ec:/snh/HARMONIE/const/jbdata"}
+   f_JBCV=stabfiltn_dem_IBERIA_8Km_2009120100_111.cv
+   f_JBBAL=stabfiltn_dem_IBERIA_8Km_2009120100_111.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+elif [ "$DOMAIN" = IBERIA ]; then
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+   f_JBCV=stabfiltn_ensIB11_2006092000_136.cv
+   f_JBBAL=stabfiltn_ensIB11_2006092000_136.bal
+elif [ "$DOMAIN" = IBERIA_2.5 ]; then
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     f_JBCV=stabfiltn_dem_IBERIA_arome2.5Km_2009060100_175.cv
+     f_JBBAL=stabfiltn_dem_IBERIA_arome2.5Km_2009060100_175.bal
+   elif [ "$VLEV" == "65" ]; then
+     f_JBCV=WGSACVUNB_2.5_65L_1.5kstar_N235
+     f_JBBAL=WGSABalances_2.5_65L_1.5kstar_N235
+   fi
+elif [ "$DOMAIN" = IBERIAxxm_2.5 ]; then
+   JBDIR=${JBDIR-"ec:/mdy/jb_data"}
+   f_JBCV=stab_structure_1_2012013118_248.cv
+   f_JBBAL=stab_structure_1_2012013118_248.bal
+elif [ "$DOMAIN" = IBERIAxl_2.5 ]; then
+   JBDIR=${JBDIR-"ec:/mdy/jb_data"}
+   f_JBCV=stab_IBERIAxl_2.5_2012090106_240.cv
+   f_JBBAL=stab_IBERIAxl_2.5_2012090106_240.bal
+elif [ "$DOMAIN" = CANARIAS_2.5 ]; then
+   JBDIR=${JBDIR-"ec:/mdk/jb_data"}
+   f_JBCV=stab_CANARIAS_2.5_2012011006_256.cv
+   f_JBBAL=stab_CANARIAS_2.5_2012011006_256.bal
+elif [ "$DOMAIN" = FINLAND ]; then
+   f_JBCV=stabfiltn_FINLAND65_20060920_168.cv
+   f_JBBAL=stabfiltn_FINLAND65_20060920_168.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+elif [ "$DOMAIN" = IRELAND150 ]; then
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+     f_JBCV=stabfiltn_ireland150_20060920_168.cv
+     f_JBBAL=stabfiltn_ireland150_20060920_168.bal
+   fi
+elif [ "$DOMAIN" = IRELAND25 ]; then
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+     f_JBCV=stabfiltn_ireland25_20060920_168.cv
+     f_JBBAL=stabfiltn_ireland25_20060920_168.bal
+   elif [ "$VLEV" == "65" ]; then
+     JBDIR=${JBDIR-"ec:/dui/jbdata"}
+     f_JBCV=stabfiltn_IRELAND25L65_20060920_168.cv
+     f_JBBAL=stabfiltn_IRELAND25L65_20060920_168.bal
+   fi
+elif [ "$DOMAIN" == "TEST_11" ]; then
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+     f_JBCV=stabfiltn_TEST_11.cv
+     f_JBBAL=stabfiltn_TEST_11.bal
+   fi
+elif [ "$DOMAIN" == "TEST_11_BIG" ]; then
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+     f_JBCV=stabfiltn_TEST_11_BIG.cv
+     f_JBBAL=stabfiltn_TEST_11_BIG.bal
+   fi
+elif [ "$DOMAIN" == "TEST_8" ]; then
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+     f_JBCV=stabfiltn_TEST_8.cv
+     f_JBBAL=stabfiltn_TEST_8.bal
+   fi
+elif [ "$DOMAIN" == "TEST_2.5" ]; then
+   if [ "$VLEV" == "HIRLAM_60" ]; then
+     JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+     f_JBCV=stabfiltn_TEST_2.5.cv
+     f_JBBAL=stabfiltn_TEST_2.5.bal
+   fi
+ elif [ "$DOMAIN" == "METCOOP25" ]; then
+#   JBDIR=${JBDIR-"ec:/smz/jbdata"}
+   JBDIR=${JBDIR-"/nobackup/smhid9/sm_ridal/jbdata"}
+   f_JBCV=stabfiltn_MetCoOpHires1_20060920_168.cv
+   f_JBBAL=stabfiltn_MetCoOpHires1_20060920_168.bal
+ elif [ "$DOMAIN" = METCOOP25B ]; then
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+   f_JBCV=stabfiltn_MetCoOpHires2_128.cv
+   f_JBBAL=stabfiltn_MetCoOpHires2_128.bal
+ elif [ "$DOMAIN" = METCOOP25C ]; then
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+   f_JBCV=stabfiltn_METCOOP25C_65_jbconv.cv
+   f_JBBAL=stabfiltn_METCOOP25C_65_jbconv.bal
+ elif [ "$DOMAIN" = HarmEPS_1 ]; then
+   # Old corrupted structure functions
+   #   f_JBCV=stabfiltn_HarmonEPS1_int_128.cv
+   #   f_JBBAL=stabfiltn_HarmonEPS1_int_128.bal
+   # New corrected structure functions
+   f_JBCV=stabfiltn_HarmonEPS1New_int_128.cv
+   f_JBBAL=stabfiltn_HarmonEPS1New_int_128.bal
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+ elif [ "$DOMAIN" = TURKEY_2.5 ]; then
+   JBDIR=${JBDIR-"ec:/tu1/jbdata"}
+   f_JBCV=stabfiltn_TURKEY25L65_20060920_168.cv
+   f_JBBAL=stabfiltn_TURKEY25L65_20060920_168.bal
+ elif [ "$DOMAIN" == "NETHERLANDS" ]; then
+     JBDIR=ec:/nkn/jbdata
+     f_JBCV=stabfiltn_NL800_cy38_FC06.cv
+     f_JBBAL=stabfiltn_NL800_cy38_FC06.bal
+ elif [ $JB_INTERPOL == "no" ] ; then
+
+   f_JBCV=undefined
+   f_JBBAL=undefined
+   JBDIR=${JBDIR-"ec:/hirlam/harmonie_jbdata"}
+
+ fi # Check on DOMAIN and VLEV
+
+fi # Check on f_JBCV, f_JBBAL, JBDIR
+
+#---------------------------------------------------
+# Observations file
+#---------------------------------------------------
+# FORMAT, it might be "BUFR" or "OPLACE"
+# OBSOUL is not handled in oulan
+OFORMAT="BUFR"    
+
+#---------------------------------------------------
+# ODB settings
+#---------------------------------------------------
+# Shuffle will operate from ANALYSISTIME - $SHUFFLE_LMARGIN
+# and ANALYSISTIME + $SHUFFLE_RMARGIN (in minutes)
+
+FCINT=${FCINT-1}
+if [ $ANAATMO = 4DVAR ]; then
+ # These settings are preliminary
+ SHUFFLE_LMARGIN=$(( - 60 ))
+ SHUFFLE_RMARGIN=$(( 60 ))
+ SHUFFLE_LMARGIN_OB=$(( - 60 ))
+ SHUFFLE_RMARGIN_OB=$(( 60 ))
+else
+ SHUFFLE_LMARGIN=$(( - $FCINT * 60 / 2 ))
+ SHUFFLE_RMARGIN=$(( $FCINT * 60 / 2 ))
+ SHUFFLE_LMARGIN_OB=$(( $SHUFFLE_LMARGIN - 60 )) 
+ SHUFFLE_RMARGIN_OB=$SHUFFLE_RMARGIN
+fi
+export SHUFFLE_LMARGIN SHUFFLE_RMARGIN SHUFFLE_LMARGIN_OB SHUFFLE_RMARGIN_OB
+
+# Time-slots for 3D-Var
+if [ $ANAATMO = 3DVAR ]; then
+
+HHTMP=$(( $FCINT / 2  ))
+MINTMP=$(( ( $FCINT * 60 / 2 ) - ( $HHTMP * 60 ) ))
+HHTMP2=$HHTMP
+if [ $MINTMP -ne "0" ] ; then
+   HHTMP2=$(( $HHTMP + 1 ))
+fi
+if [ $MINTMP -eq "0" ] ; then
+   MINTMP=00
+fi
+
+export MINTMP HHTMP HHTMP2
+
+fi
+
+# Export ODB and BATOR environment
+export BATOR_NBSLOT=1
+export BATODB_NBSLOT=1
+export BATOR_LAMFLAG=1
+
+export ODB_CTX_DEBUG=0
+export ODB_DEBUG=0
+export ODB_VERBOSE_OUT=0
+
+export ODB_CCMA_CREATE_POOLMASK=1
+export ODB_CCMA_CREATE_DIRECT=1
+export ODB_ECMA_CREATE_POOLMASK=1
+export ODB_IO_METHOD=1
+export ODB_REPRODUCIBLE_SEQNO=2
+export ODB_STATIC_LINKING=1
+export ODB_TRACE_FILE=List_odb
+export ODB_TRACE_PROC=-1
+
+export TO_ODB_ECMWF=0
+export TO_ODB_DEBUG=1
+export TO_ODB_ECMWF=0
+export TO_ODB_SWAPOUT=0
+
+#---------------------------------------------------
+# ODB dir names
+#---------------------------------------------------
+export types_BASE="conv"
+export types_BASE_can="conv"
+
+#---------------------------------------------------
+# MINIMIZATION HIGH-LEVEL SETTINGS
+#---------------------------------------------------
+# First guess is a $TIMEWINDOW hours old forecast,
+# used for 3DVAR, CANARI (when no 3dvar), and for
+# CANARI when relaxing to previous analysis increments
+TIMEWINDOW=6
+
+# REDNMC: Coefficient to multiply to sigma B in minimization
+# REDZONE: Distance to boundary where observations are excluded in Bator
+# To carefully tune
+
+# Default values
+export REDZONE=100.
+export REDNMC=0.9
+
+if [ "$DOMAIN" = RCR_POLAR ]; then
+   REDNMC=1.9
+elif [ "$DOMAIN" = SCANDINAVIA_5.5 ]; then
+   REDNMC=0.6
+   REDZONE=250.
+elif [ "$DOMAIN" = METCOOP25B ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = METCOOP25C ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = HarmEPS_1 ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = SWEDEN_2.5 ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = DENMARK ]; then
+   REDNMC=0.6
+elif [ "$DOMAIN" = DKCOEXP ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = DKA ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = NEA ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = IGA ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = IRELAND25 ]; then
+   REDNMC=0.6
+elif [ "$DOMAIN" = IBERIAxl_2.5 ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = IBERIAxxm_2.5 ]; then
+   REDNMC=0.6
+   REDZONE=150.
+elif [ "$DOMAIN" = FINLAND ]; then
+   REDNMC=0.6
+elif [ "$DOMAIN" = IRELAND25 ]; then
+   REDNMC=0.6
+elif [ "$DOMAIN" = SCANDINAVIA -a "${OLDSTRFUN-no}" = yes ]; then
+   REDNMC=1.0
+fi
+
+export TIMEWINDOW REDNMC REDZONE
+
+# Set width of the rim zone in rows of longitude
+# Depending on domain. The test domains uses a smaller 
+# one
+case $DOMAIN in
+  TEST_11|TEST_11L|TEST_8|IRELAND150)
+   NBZONVAR_EW=10
+   ;;
+  *)
+   NBZONVAR_EW=20
+   ;;
+esac
+
+export NBZONVAR_EW
+
+#---------------------------------------------------
+# USEOBSOUL: HOW TO PROCESS CONVENTIONAL BUFR
+#        1=> BATOR READS OBSOUL FILE
+#        0=> BATOR READS CONVENTIONAL BUFR DIRECTLY 
+#---------------------------------------------------
+export USEOBSOUL=1
+
+#---------------------------------------------------
+# Configure OULAN_BUFR
+#---------------------------------------------------
+
+if  [[  $USEOBSOUL -eq 1  ]]; then
+#---------------------------------------------------
+#--- Verbose Output
+#---------------------------------------------------
+    export LBUFRDEBUGBUOY=0
+    export LBUFRDEBUGSYNOP=0
+    export LBUFRDEBUGPILOT=0
+    export LBUFRDEBUGTEMP=0
+    export DEBUGMESS=36
+
+#---------------------------------------------------
+#--- Process new BUFR formats (1) or not (0)
+#---------------------------------------------------
+    export LNEWSYNOPBUFR=0
+    export LNEWSHIPBUFR=0
+    export LNEWBUOYBUFR=0
+    export LNEWTEMPBUFR=0
+fi
+
+#---------------------------------------------------
+# LIST OBSERVATIONS TO USE (0: NO; 1: YES)
+#---------------------------------------------------
+export SYNOP_OBS=1             # All SYNOP including SHIP
+export AIRCRAFT_OBS=1          # AMDAR, AIREP, ACARS
+export MODESEHS_OBS=0          # Mode-S EHS 
+export BUOY_OBS=1              # BUOY
+export TEMP_OBS=1              # TEMP, TEMPSHIP
+export PILOT_OBS=1             # Pilot, Europrofiler
+export CONV_SOURCE=mars        # mars: data from mars
+                               # gts: "raw" GTS BUFR
+                               # knmi: Dutch conventional BUFR
+                               # mcp: MetCoOp conventional BUFR
+                               # metie: Irish conventional BUFR
+export AMV_OBS=0               # Satob geowind
+export AMV_SOURCE=mars         # ears:EUMETCast|mars:MARS|local:NWCSAF (N/A)
+export SEVIRI_OBS=0            # Seviri radiances
+export AMSUA_OBS=0             # AMSU-A
+export AMSUB_OBS=0             # AMSU-B, MHS
+export ATMS_OBS=0              # ATMS
+export ATOVS_SOURCE=mars       # local: EUMETCast; 
+                               # mars: data from MARS
+                               # hirlam: hirlam radiance template 
+export IASI_OBS=0              # IASI  
+export IASI_SOURCE=mars        # local: EUMETCast; mars: data from MARS
+export IASI_RT_COEF=lblrtm     # genln2|kcarta|lblrtm
+export PAOB_OBS=0              # PAOB not defined everywhere
+export SCATT_OBS=0             # Scatterometer data not defined everywhere
+export LIMB_OBS=0              # LIMB observations, GPS Radio Occultations
+export RADAR_OBS=0             # Radar 
+export GNSS_OBS=0              # GNSS
+export SGNSS_OBS=0             # slant-GNSS
+
+# 
+#-- choice of ODB bases
+# 
+if  [[  $IASI_OBS -eq 1  ]]; then
+    # adding iasi
+    types_BASE="$types_BASE iasi"
+fi
+if  [[  $SEVIRI_OBS -eq 1  ]]; then
+    # adding seviri
+    types_BASE="$types_BASE sevb"
+fi
+if [[  $AMSUA_OBS -eq 1 ]]; then
+    # adding ATOVS amsua
+    types_BASE="$types_BASE amsua"
+fi
+if [[  $AMSUB_OBS -eq 1  ]]; then
+    # adding ATOVS amsub/mhs
+    types_BASE="$types_BASE amsub"
+fi
+if [[  $ATMS_OBS -eq 1  ]]; then
+    # adding ATMS
+        types_BASE="$types_BASE atms"
+fi
+if [[ ( $SCATT_OBS -eq 1 ) ]]; then
+    # adding ascat/qscat
+    types_BASE="$types_BASE ascat"
+fi
+if  [[  $RADAR_OBS -eq 1  ]]; then
+    # adding radar
+    types_BASE="$types_BASE radarv"
+fi
+if  [[  $LIMB_OBS -eq 1  ]]; then
+    # adding GPSro
+    types_BASE="$types_BASE gpsro"
+fi
+
+#---------------------------------------------------
+# SATELLITE CONSTANTS
+#---------------------------------------------------
+export HM_SAT_CONST=${HM_SAT_CONST-$HM_LIB/const/sat_const}
+
+#---------------------------------------------------
+#   GNSS OBSERVATIONS (GPS ZTD) SETTINGS
+#---------------------------------------------------
+export LSTATIC_BIAS=F           # Switch for bias correction or not, (T|F)
+export LVARBC_GNSS=T            # Switch for GNSS varbc 
+#
+#
+#---------------------------------------------------
+# BIAS CORRECTION SETTINGS
+#---------------------------------------------------
+export LVARBC="F"        # T|F
+[ $AMSUA_OBS -eq 1 -o $AMSUB_OBS -eq 1 -o $ATMS_OBS -eq 1  \
+  -o $IASI_OBS -eq 1 -o $SEVIRI_OBS -eq 1 \
+  -o \( $GNSS_OBS -eq 1 -a $LVARBC_GNSS = T \) ] && LVARBC="T"
+
+
+# Start with empty VARBC coefficients
+export VARBC_COLD_START=yes # yes|no
+
+if [ $FCINT -ne "06" ] ; then
+  VARBC_COLD_START=yes # yes|no
+fi
+
+# Make sure ODB always gets valid time information
+# This is used in case a pool as no observations
+export BASETIME=$DTG
+
+# Set path to create_ioassign
+export PATH=$HM_LIB/src/odb/scripts:$ROOTPACK/${REVISION}_$BRANCH.$VERSION.$LIBFRT.$OPTION/src/local/odb/scripts:$PATH

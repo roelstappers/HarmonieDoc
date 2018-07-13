@@ -1,0 +1,482 @@
+#!/bin/bash
+#
+# Convert FA/lfi files to GRIB
+#
+
+. header.sh
+
+# Binary
+BINARY=$BINDIR/gl
+# Debug level
+PRINTLEV=0
+
+gl_with_msg() {
+    local fa=$1
+    local grb=$2
+    local nl=$3
+    local mbr=
+    [ ${ENSMBR--1} -ge 0 ] && mbr=_mbr$ENSMBR
+    local base=`basename $grb`
+    cat $nl
+    echo "$MPPGL $BINARY -p $fa -o $grb -s -n $nl"
+    $MPPGL $BINARY -p $fa -o $grb -s -n $nl || return 1
+    return 0
+}
+
+Create_warning() {
+    echo " Missing $1 in Makegrib_gribex"
+    echo $( date +"%Y-%m-%d %T" ) DTG=${DTG}: >> $HM_DATA/severe_warnings.txt
+    echo " Missing $1 in Makegrib_gribex" >> $HM_DATA/severe_warnings.txt
+}
+
+
+cd $WRK
+WDIR=`hostname`$$
+Workdir $WDIR
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+if [ "$#" -eq "2" ]; then
+  MG=$1
+  GTYPE=$2
+  if [ "$MG" -lt "0" ] ; then
+    echo "ERROR: The argument $MG to be used for making grib files is outside the forecast range"
+    exit 1
+  fi
+else
+  echo "Usage: $0 FC_HOUR/STEP TYPE"
+  exit 1
+fi
+
+YY=${DTG:0:4}
+MM=${DTG:4:2}
+DD=${DTG:6:2}
+HH=${DTG:8:2}
+
+# 
+# Prepare namelists for grib conversion
+# 
+
+# FF is forecast length in hours or timestep if TFLAG=min
+FF=$MG
+
+if [ $TFLAG = "min" ] ; then
+  time_unit=${GRIB_TIME_UNIT:-0}
+  case $time_unit in
+   0)
+     # 1 min
+     TIME_SCALE=1
+     ;;
+   13)
+     # 15 min
+     TIME_SCALE=15
+     ;;
+   14)
+     # 30 min
+     TIME_SCALE=30
+     ;;
+    *)
+     echo "Time unit not handled in Makegrib:",$time_unit
+     exit 1
+     ;;
+  esac
+  set +e
+  FF=$(( $FF * $TSTEP / 60 / $TIME_SCALE ))
+  FR=$(( $FREQ_RESET_TEMP / 60 / $TIME_SCALE ))
+  fstart=$(( ( ( 10#$FF - 1 ) / $FR ) * $FR ))
+  [[ $fstart -lt 0 ]] && fstart=0
+
+  if [ $FREQ_RESET_GUST eq -1 ] ; then
+    FR=$(( $FREQ_RESET_TEMP / 60 / $TIME_SCALE ))
+  elif [ $FREQ_RESET_GUST gt 0 ] ; then
+    FR=$( perl -S Output_freq.pl GUSTPERIOD $FF )
+    [[ $FR -eq 0 ]] && FR=1
+  else
+    echo "Erroneous value for FREQ_RESET_GUST:$FREQ_RESET_GUST"
+    exit 1
+  fi
+  fstartg=$(( ( ( 10#$FF - 1 ) / $FR ) * $FR ))
+  [[ $fstartg -lt 0 ]] && fstartg=0
+
+  set -e 
+else
+  # Hours
+  time_unit=1
+  fstart=$(( ( ( 10#$FF - 1 ) / $FREQ_RESET_TEMP ) * $FREQ_RESET_TEMP ))
+
+  if [ $FREQ_RESET_GUST -eq -1 ] ; then
+    fstartg=$(( ( ( 10#$FF - 1 ) / $FREQ_RESET_TEMP ) * $FREQ_RESET_TEMP ))
+  elif [ $FREQ_RESET_GUST -gt 0 ] ; then
+    FR=$( perl -S Output_freq.pl GUSTPERIOD $FF )
+    [[ $FR -eq 0 ]] && FR=1
+    fstartg=$(( ( ( 10#$FF - 1 ) / $FR ) * $FR ))
+  else
+    echo "Erroneous value for FREQ_RESET_GUST:$FREQ_RESET_GUST"
+    exit 1
+  fi
+
+  [[ $fstart -lt 0 ]] && fstart=0
+  [[ $fstartg -lt 0 ]] && fstartg=0
+fi
+
+# Namelist for surfex
+cat > namelist_makegrib${MG}_sfx << EOF
+&naminterp
+ outkey%yy=$YY,
+ outkey%mm=$MM,
+ outkey%dd=$DD,
+ outkey%hh=$HH,
+ outkey%mn=00,
+ outkey%ff=$FF,
+ time_unit=$time_unit
+ printlev=$PRINTLEV
+ lclear_mem = .TRUE.,
+/
+EOF
+
+cp namelist_makegrib${MG}_sfx namelist_makegrib${MG}_sfxf
+
+# Upper air forecast
+cat > namelist_makegrib${MG} << EOF
+&naminterp
+ outkey%yy=$YY,
+ outkey%mm=$MM,
+ outkey%dd=$DD,
+ outkey%hh=$HH,
+ outkey%mn=00,
+ outkey%ff=$FF,
+ time_unit=$time_unit
+ pppkey(1:2)%ppp =   1, 61
+ pppkey(1:2)%ttt = 103,105
+ pppkey(1:2)%lll =   0,  0
+ pppkey(1:2)%tri =   0,  4
+ skipsurfex = .TRUE.,
+ fstart( 15) = $fstart,
+ fstart( 16) = $fstart,
+ fstart(162) = $fstartg,
+ fstart(163) = $fstartg,
+ fstart(228) = $fstartg,
+ printlev=$PRINTLEV
+ cape_version=1,
+ lclear_mem = .TRUE.,
+/
+EOF
+
+# Upper air analysis
+cat > namelist_makegrib${MG}_an << EOF
+&naminterp
+ outkey%yy=$YY,
+ outkey%mm=$MM,
+ outkey%dd=$DD,
+ outkey%hh=$HH,
+ outkey%mn=00,
+ outkey%ff=$FF,
+ time_unit=$time_unit
+ pppkey(1:1)%ppp =   1,
+ pppkey(1:1)%ttt = 103,
+ pppkey(1:1)%lll =   0,
+ pppkey(1:1)%tri =   0,
+ skipsurfex = .TRUE.,
+ fstart( 15) = $fstart,
+ fstart( 16) = $fstart,
+ fstart(162) = $fstartg,
+ fstart(163) = $fstartg,
+ fstart(228) = $fstartg,
+ printlev=$PRINTLEV
+ cape_version=1,
+/
+EOF
+
+cp namelist_makegrib${MG} namelist_makegrib${MG}_his
+
+function rcr_gl {
+
+ #
+ # Write to output files
+ # 1 Standard history file conversion
+ # 2 RCR subset file, with the suffix _rcr
+ # 
+ # $1 = Input  file
+ # $2 = Output file
+ #
+
+ if [ $RCR_POSTP = "yes" ] ; then
+
+cat > namelist_rcr << EOF
+&naminterp
+ output_format='MEMORY'
+/
+EOF
+
+head -n -1 namelist_makegrib${MG} >> namelist_rcr
+cat >> namelist_rcr << EOF
+ input_format='MEMORY'
+ output_format='GRIB'
+ outfile='$2'
+/
+&naminterp
+ input_format='MEMORY'
+ output_format='GRIB'
+ outfile='${2}_rcr'
+ pppkey%ppp = 001,011,033,034,052,071,
+ pppkey%lll = 000,002,010,010,002,000,
+ pppkey%ttt = 103,105,105,105,105,105,
+ lwrite_pponly =T,
+ printlev=$PRINTLEV
+/
+EOF
+
+  $MPPGL $BINARY -p $1 -n namelist_rcr || exit
+
+else
+
+  #
+  # Standard conversion if rcr not requested. 
+  # Faster and less memory demanding
+  #
+
+  $MPPGL $BINARY -p $1 -o $2 -n namelist_makegrib${MG} || exit
+
+fi
+
+}
+
+function Build_new_namelist {
+
+ local I=$1
+ local N=$2
+ local G=$3
+
+ FSTART="fstart(15) = $fstart, fstart(16) = $fstart, fstart(162) = $fstartg, fstart(163) = $fstartg, fstart(228) = $fstartg,"
+ case $GTYPE in
+  fp)
+   istop=0
+   jstop=0
+   ;;
+  his)
+   istop=-$EZONE
+   jstop=-$EZONE
+   ;;
+  *)
+   istop=-$EZONE
+   jstop=-$EZONE
+   FSTART="fstart(0) = -1"
+   ;;
+ esac
+
+if [ $RCR_POSTP = "yes" -a $GTYPE = his ] ; then
+
+cat >> $N << EOF
+&naminterp
+ input_format='MEMORY'
+ output_format='GRIB'
+ outfile='${G}_rcr'
+ pppkey%ppp = 001,011,033,034,052,071,
+ pppkey%lll = 000,002,010,010,002,000,
+ pppkey%ttt = 103,105,105,105,105,105,
+ lwrite_pponly =T,
+ printlev=$PRINTLEV
+/
+EOF
+
+fi
+
+
+ MAXFL=$( wc $I | awk '{print substr($2,1)}' )
+
+ rm -f foo
+ J=1
+ for F in $( cat $I ) ; do
+
+cat >> foo << EOF
+&naminterp
+ maxfl=$MAXFL
+ output_format='MEMORY',
+ output_type = 'APPEND',
+ input_format='FA',
+ infile='$F',
+ printlev=$PRINTLEV
+ $FSTART
+/
+EOF
+  
+  J=$(( $J + 1 ))
+ done
+
+cat >> foo << EOF
+&naminterp
+ input_format = 'MEMORY',
+ output_format= 'GRIB',
+ output_type  = 'NEW'
+ outfile      = '$G',
+ istop=$istop
+ jstop=$jstop
+EOF
+
+tail -n +2 namelist_makegrib${MG}_$GTYPE >> foo
+
+$MPPGL $BINARY -s -n foo || exit
+
+}
+
+
+# Namelist for post-processed files
+cat > namelist_makegrib${MG}_fp << EOF
+&naminterp
+ outkey%yy=$YY,
+ outkey%mm=$MM,
+ outkey%dd=$DD,
+ outkey%hh=$HH,
+ outkey%mn=00,
+ outkey%ff=$FF,
+ time_unit=$time_unit
+ pppkey(1:4)%ppp =  31,  32,  61, 185,  
+ pppkey(1:4)%ttt = 105, 105, 105, 105,
+ pppkey(1:4)%lll =  10,  10,   0,   0,
+ pppkey(1:4)%tri =   0,   0,   4,   4,
+ fstart(15) = $fstart,
+ fstart(16) = $fstart,
+ fstart(162) = $fstartg,
+ fstart(163) = $fstartg,
+ fstart(228) = $fstartg,
+ lclear_mem = .FALSE.,
+/
+EOF
+
+#
+# Start file conversion
+#
+
+set +e
+FFFF=`perl -e "printf('%4.4i', '$MG')"`
+FFF=`perl -e "printf('%3.3i', '$MG')"`
+if [ $TFLAG = "h" ] ; then
+  FG=`perl -e "printf('%3.3i', '$MG')"`
+else
+  HH=$(( ( $MG * $TSTEP ) / 3600 ))
+  MIN=$(( ( $MG * $TSTEP ) % 3600 / 60 ))
+  HH=`perl -e "printf('%3.3i', '$HH')"`
+  MIN=`perl -e "printf('%2.2i', '$MIN')"`
+  FG=${HH}h${MIN}m
+fi
+set -e
+
+regfile=${REGFILE:-"$WRK/registry_makegrib"}
+ret=0
+grep "#Makegrib#${MG}#${GTYPE}#" $regfile > /dev/null 2>&1 || ret=1
+if [ $ret -eq 1 ]; then
+# Analysis files
+if [ $GTYPE = "ana" ] ; then
+  if [ $MG -eq 0 ] ; then
+    if [ $ANASURF != "none" ] ; then
+      if [ $is_coldstart != "yes" ]; then
+        if [ -s $WRK/can_oper.dat -a $RUNNING_MODE == "operational" ] ; then
+          echo $( date +"%Y-%m-%d %T" ) DTG=${DTG} MBR=${ENSMBR}: >> $HM_DATA/severe_warnings.txt
+          echo "Surface assimilation failed, no grib file!" >>  $HM_DATA/severe_warnings.txt
+        else
+	      gl_with_msg $ARCHIVE/ICMSHANAL+0000 $ARCHIVE/sa${DTG}+${FG}grib namelist_makegrib${MG}_an || exit
+          if [ "$ANASURF" != "CANARI" ]; then
+            gl_with_msg $ARCHIVE/PREP.$SURFEX_OUTPUT_FORMAT $ARCHIVE/sa${DTG}+${FG}grib_sfx namelist_makegrib${MG}_sfx || exit
+          fi
+        fi
+      fi
+    fi
+    if [ $ANAATMO != "none" ]; then
+      if [ $is_coldstart != "yes" ]; then
+        if [ $ANAATMO == "4DVAR" ] || [ $ANAATMO == "3DVAR" ]; then
+          if [ $ANAATMO == "4DVAR" ] ; then
+            gl_with_msg $ARCHIVE/an $ARCHIVE/an${DTG}+${FG}grib namelist_makegrib${MG}_an || exit
+            # Exclude the duplicated orography
+            sed -e "s/\//exclkey%name = 'SPECSURFGEOPOTEN', \//" namelist_makegrib${MG}_an > foo
+            gl_with_msg $ARCHIVE/an_begwin $ARCHIVE/ba${DTG}+${FG}grib foo || exit
+          else 
+            gl_with_msg $ARCHIVE/MXMIN1999+0000 $ARCHIVE/an${DTG}+${FG}grib namelist_makegrib${MG}_an || exit
+            gl_with_msg $ARCHIVE/ANAB1999+0000 $ARCHIVE/ba${DTG}+${FG}grib namelist_makegrib${MG}_an || exit
+          fi
+        elif [ $ANAATMO = "blending" ]; then
+          gl_with_msg $ARCHIVE/blended_first_guess $ARCHIVE/ba${DTG}+${FG}grib namelist_makegrib${MG}_an || exit
+        fi
+      fi
+    fi
+  fi
+
+# Historic file
+elif [ $GTYPE = "his" ] ; then
+  A=ICMSH${CNMEXP}+$FFFF           # Atmospheric file
+  G=fc${DTG}+${FG}grib             # Atmospheric GRIB file
+  N=namelist_makegrib${MG}
+  TOC_FILE=$WRK/Makegrib_${FFFF}_his
+  if [ -s $TOC_FILE ] ; then 
+    Build_new_namelist $TOC_FILE $N $ARCHIVE/$G || exit 
+  else
+    [[ $IO_SERVER = yes ]] && Create_warning $TOC_FILE
+    gl_with_msg $ARCHIVE/$A $ARCHIVE/$G $N || exit
+  fi
+
+# Inline fullpos file
+elif [ $GTYPE = "fp" ] ; then
+  A=PF${CNMEXP}${DOMAIN}+$FFFF      # Atmospheric file
+  G=fc${DTG}+${FG}grib_fp           # Atmospheric GRIB file
+  N=namelist_makegrib${MG}_fp
+  TOC_FILE=$WRK/Makegrib_${FFFF}_fp
+  if [ -s $TOC_FILE ] ; then 
+    Build_new_namelist $TOC_FILE $N $ARCHIVE/$G || exit 
+  else
+    [[ $IO_SERVER = yes ]] && Create_warning $TOC_FILE
+    gl_with_msg $ARCHIVE/$A $ARCHIVE/$G $N || exit
+  fi
+
+
+# Historic SURFEX files
+elif [ $GTYPE = "sfx" ] ; then
+  if [ $SURFEX_OUTPUT_FORMAT == "lfi" ] ; then
+    S=AROMOUT_.$FFFF.lfi
+  else
+    S=ICMSH${CNMEXP}+$FFFF.$GTYPE
+  fi
+  GSFX=fc${DTG}+${FG}grib_$GTYPE      # Surfex GRIB file
+  N=namelist_makegrib${MG}_$GTYPE
+  TOC_FILE=$WRK/Makegrib_${FFFF}_${GTYPE}
+  if [ -s $TOC_FILE ] ; then 
+    Build_new_namelist $TOC_FILE $N $ARCHIVE/$GSFX || exit 
+  else
+    [[ $IO_SERVER = yes ]] && Create_warning $TOC_FILE
+    gl_with_msg $ARCHIVE/$S $ARCHIVE/$GSFX $N || exit
+  fi
+
+elif [ $GTYPE = "sfxf" ] ; then
+  if [ $SURFEX_OUTPUT_FORMAT == "lfi" ] ; then
+    echo "Cannot handle this case"
+    exit 1
+  else
+    S=ICMSHFULL+$FFFF.sfx
+  fi
+  GSFX=fc${DTG}+${FG}grib_full_sfx  # Surfex model state GRIB file
+  N=namelist_makegrib${MG}_$GTYPE
+  TOC_FILE=$WRK/Makegrib_${FFFF}_${GTYPE}
+  if [ -s $TOC_FILE ] ; then 
+    Build_new_namelist $TOC_FILE $N $ARCHIVE/$GSFX || exit 
+  else
+    [[ $IO_SERVER = yes ]] && Create_warning $TOC_FILE
+    gl_with_msg $ARCHIVE/$S $ARCHIVE/$GSFX $N || exit
+  fi
+
+# All other files assumed to be Fullpos post-processed files
+else
+  regfile="$WRK/registry_postpp_makegrib"
+  A=PF${CNMEXP}000+${FFFF}${GTYPE} # Atmospheric file
+  G=fc${DTG}+${FG}grib_${GTYPE}    # Atmospheric GRIB file
+  gl_with_msg $ARCHIVE/$A $ARCHIVE/$G namelist_makegrib${MG}_fp || exit
+fi
+##rm -f namelist_makegrib${MG}
+
+echo "#Makegrib#${MG}#${GTYPE}#" >> $regfile
+
+else
+ echo "Makegrib_gribex for length:$MG type:$GTYPE is already done"
+fi
+
+cd ..
+rm -fr $WDIR
+trap - 0
+exit

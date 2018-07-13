@@ -1,0 +1,260 @@
+#!/bin/bash
+
+#
+# Prepare SURFEX input file from different sources
+# - ECMWF GRIB file
+# - HIRLAM GRIB file
+# - AROME/ALADIN/ALARO/ARPEGE input FA file
+# - SURFEX state FA/LFI file
+#
+
+. header.sh
+
+cd "$WRK"
+WDIR=$(hostname)$$
+Workdir "$WDIR"
+
+trap "Trapbody $WDIR ; exit 1" 0
+
+ INFILE=$1
+OUTFILE=$2
+
+# Link Ecoclimap cover files
+ln -sf $CLIMDIR/*.bin .
+
+if [ "$SURFEX_PREP" == yes ]; then
+
+  if [ "$HOST_MODEL" = ifs ] || [ "$HOST_MODEL" = hir ]; then
+
+    # If host model is ifs or hir it is of type GRIB
+    ln -sf "$INFILE" INFILE
+    CFILETYPE="GRIB"
+  elif [ "$HOST_SURFEX" == yes ]; then
+
+    if [ "$SURFEX_INPUT_FORMAT" == fa ]; then
+       cp "$INFILE" INFILE.fa
+       INFILE=INFILE_converted.lfi
+       conv sfxfa2lfi INFILE.fa $INFILE || exit 1
+    fi
+
+    # Host model is a model having surfex output
+    ln -sf $INFILE INFILE.lfi
+    CFILETYPE="LFI"
+
+    # Link the host PGD file
+    ln -sf "$BDCLIM"/PGD.lfi PGD_host.lfi
+
+  else
+  
+    # Handle all others as models having FA files as output
+    ln -sf $INFILE INFILE.fa
+    CFILETYPE="FA" 
+  fi
+
+  ln -sf "$CLIMDIR"/PGD.lfi .
+
+  # Get SURFEX namelist
+  NAMELIST=$WRK/$WDIR/namelist_sfx_prep
+  Get_namelist sfx_prep "$NAMELIST"
+
+  NYEAR=$(mandtg -year "$DTG")
+  NMONTH=$(mandtg -month "$DTG")
+  NDAY=$(mandtg -day "$DTG")
+  XTIME=$(mandtg -hour "$DTG")
+  XTIME=$(( 10#$XTIME * 3600 ))
+
+  # Substitute namelist
+  sed -e "s/CFILETYPE=CFILETYPE/CFILETYPE=\"${CFILETYPE}\"/g" \
+      -e "s/NMONTH=NMONTH/NMONTH=${NMONTH}/g" \
+      -e "s/NYEAR=NYEAR/NYEAR=${NYEAR}/g" \
+      -e "s/NDAY=NDAY/NDAY=${NDAY}/g" \
+      -e "s/XTIME=XTIME/XTIME=${XTIME}/g" \
+      -e "/CTYPE_SIC=/ c\ CTYPE_SIC=\"${CFILETYPE}\""\
+      "$NAMELIST" > OPTIONS.nam 
+
+  # Run PREP
+#  export DR_HOOK_NOT_MPI=1
+  $MPPGL "$BINDIR"/PREP || exit
+
+  # Cat logs
+  Cat_logs OPTIONS.nam LISTING_PREP.txt
+  
+else
+  #
+  # Prepare initial surfex file by the following method:
+  #
+  # GRIB ------> ALADIN/FA ------> SURFEX/LFI
+  #        gl              fullpos
+  #
+  #
+
+  #
+  # The atmosphere is not really use so we only give some 
+  # minimum number of levels to keep fullpos happy
+  #
+
+  PREP_VLEV=SURFEX_DUMMY
+
+  # Check the existance of this level definition
+  perl -S Vertical_levels.pl $PREP_VLEV TEST || exit
+
+  MLL=0
+  MLL=$(perl -e "printf('%3.3i', '$MLL')")
+
+  # Find the correct climate month
+  CDTG=$( mandtg "$DTG" + "$MLL" )
+  CM=$(echo "$CDTG" | awk '{print substr($1,5,2)}')
+
+  #
+  # Prepare the file for Fullpos
+  #
+
+  if [ "$HOST_MODEL" = ifs ] || [ "$HOST_MODEL" = hir ] ; then 
+
+   #
+   # Namelist for gl
+   #
+
+   echo '&NAMINTERP' > naminterp
+   echo OUTGEO%NLEV="$( perl -S Vertical_levels.pl $PREP_VLEV NLEV )" >> naminterp
+   echo AHALF="$( perl -S Vertical_levels.pl $PREP_VLEV AHALF )" >> naminterp
+   echo BHALF="$( perl -S Vertical_levels.pl $PREP_VLEV BHALF )" >> naminterp
+
+   LSWICONV=T
+   LOLDTESSEL=F
+   LDEMAND_ALL_LEVELS=T
+   if [ "$BDSTRATEGY" = eps_ec ]; then
+     LSWICONV=F
+     LDEMAND_ALL_LEVELS=F
+   elif [ "$DTG" -lt 2007060500 -a "$HOST_MODEL" = ifs -o "$BDSTRATEGY" = era ] ; then
+     LOLDTESSEL=T
+   fi
+   echo LOLDTESSEL=$LOLDTESSEL >> naminterp
+   echo LSWICONV=$LSWICONV >> naminterp
+   echo LDEMAND_ALL_LEVELS=$LDEMAND_ALL_LEVELS >> naminterp
+   echo ORDER=1 >> naminterp
+   echo '/' >> naminterp
+
+   #### First GRIB to ALADIN/FA by gl
+
+   ln -sf "$CLIMDIR"/m"$CM" climate_aladin
+
+   # Input geometry for fullpos
+   ln -sf "$CLIMDIR"/m"$CM" Const.Clim
+   NLON=$NDLUXG
+   NLAT=$NDGUXG
+
+   $MPPGL "$BINDIR"/gl_grib_api -lbc "$HOST_MODEL" "$INFILE" -o ICMSH"${CNMEXP}"INIT -s -n naminterp || exit
+
+  else # $HOST_MODEL = ala|aro
+
+    #
+    # Link the input and climate file
+    #
+    ln -sf "$INFILE" ICMSH"${CNMEXP}"INIT
+    ln -sf "$BDCLIM"/m"$CM" Const.Clim
+    NLON=$NLON
+    NLAT=$NLAT
+
+  fi
+
+  # RRTM files
+  ln -sf "$HM_LIB"/const/rrtm_const/MCICA MCICA
+  ln -sf "$HM_LIB"/const/rrtm_const/RADSRTM RADSRTM
+
+  #
+  # Output geometry
+  #
+  ln -sf  "$CLIMDIR"/m"$CM" const.clim.000
+  ln -sf  "$CLIMDIR"/PGD.lfi PGDFILE.lfi
+
+  # SURFEX namelist
+  Get_namelist sfx_prep "$WRK"/"$WDIR"/PRE_REAL1.nam
+
+  #  Get the fullpos namelist
+  NAMELIST=$WRK/$WDIR/namelist_e927_surfex
+  Get_namelist e927_surfex "$NAMELIST"
+
+  # Check if Q input is in gridpoint or spectral space
+  if [ "$( "$BINDIR"/domain_prop_grib_api -f -QCHECK ICMSH"${CNMEXP}"INIT )" -eq 1 ] ; then
+     YQ_NL_LGP='.FALSE.'
+     YQ_NL_LSP='.TRUE.'
+     LSPRT='.FALSE.'
+  else
+     YQ_NL_LGP='.TRUE.'
+     YQ_NL_LSP='.FALSE.'
+     LSPRT='.TRUE.'
+  fi
+
+  # Check if input field is NH
+  if [ "$( "$BINDIR"/domain_prop_grib_api -f -CHECK_FIELD S001VERTIC.DIVER ICMSH${CNMEXP}INIT )" -eq 1 ] ; then
+     LNHDYN='.TRUE.'
+  else
+     LNHDYN='.FALSE.'
+  fi
+
+  LFMREAD=.TRUE.
+  LFMWRIT=.TRUE.
+  LFAPGD=.FALSE.
+  sed -e "s/NBPROC/${NPROC}/g"  \
+      -e "s/NPROCX/${NPROCX}/g" \
+      -e "s/NPROCY/${NPROCY}/g" \
+      -e "s/NPROCY/${NPROCY}/g" \
+      -e "s/YQ_NL_LGP/${YQ_NL_LGP}/g" \
+      -e "s/YQ_NL_LSP/${YQ_NL_LSP}/g" \
+      -e "s/LSPRT=LSPRT/LSPRT=${LSPRT}/g" \
+      -e "s/LNHDYN=LNHDYN/LNHDYN=${LNHDYN}/g" \
+      -e "s/NLON=NLON/NLON=${NLON}/g" \
+      -e "s/NLAT=NLAT/NLAT=${NLAT}/g" \
+      -e "s/=LFMREAD/=${LFMREAD}/g" \
+      -e "s/=LFMWRIT/=${LFMWRIT}/g" \
+      -e "s/=LFAPGD/=$LFAPGD/g" \
+      -e "s/NCONF=NCONF/NCONF=001/g" \
+      -e "s/CNMEXP=CNMEXP/CNMEXP=\"$CNMEXP\"/g" \
+      -e "s/CUSTOP=CUSTOP/CUSTOP=\"t0\"/g" \
+      -e "s/TSTEP=TSTEP/TSTEP=1./g" \
+      -e "s/LSLAG=LSLAG/LSLAG=.FALSE./g" \
+      "$NAMELIST" > fort.4
+
+  Cat_logs fort.4 PRE_REAL1.nam
+
+  # Run e927
+  $MPPEXEC $BINDIR/$MODEL || exit
+
+  Cat_logs NODE.001_01 OUTPUT_LISTING
+
+  [[ -s drhook.prof.1 ]] && { tar cvf "${TASK}"_prof.tar drhook.prof.* ; mv "${TASK}"_prof.tar "$ARCHIVE" ; }
+
+fi
+
+
+if [ "$SURFEX_OUTPUT_FORMAT" = lfi ] ; then
+  mv SURFXINI.lfi "$ARCHIVE"/SURFXINI.lfi
+  ln -sf "$ARCHIVE"/SURFXINI.lfi "$OUTFILE"
+
+  # Set the initial file for EKF to the initial SURFEX file
+  ln -sf "$ARCHIVE"/AROMOUT_.0000.lfi "$ARCHIVE"/PREP_init.lfi
+
+else
+    
+  # Convert lfi file to FA-file
+  [ -f "$ARCHIVE"/SURFXINI.fa ] && rm "$ARCHIVE"/SURFXINI.fa
+  MM_MAIN=$(mandtg -month "$DTG")
+  ln -s "$CLIMDIR"/m"$MM_MAIN" m"$MM_MAIN"
+  conv sfxlfi2fa SURFXINI.fa SURFXINI.lfi m"$MM_MAIN" || exit 1
+  mv SURFXINI.lfi "$ARCHIVE"/SURFXINI.lfi
+  mv SURFXINI.fa  "$ARCHIVE"/SURFXINI.fa
+  ln -sf "$ARCHIVE"/SURFXINI.fa "$OUTFILE"
+
+  # Set the initial file for EKF to the initial SURFEX file
+  ln -sf "$ARCHIVE"/ICMSHHARM+0000.sfx "$ARCHIVE"/PREP_init.fa
+fi
+
+#
+# normal exit
+#
+
+cd ..
+rm -fr "$WDIR"
+trap - 0
+exit

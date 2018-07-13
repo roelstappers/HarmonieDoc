@@ -1,0 +1,67 @@
+#!/bin/bash
+
+#
+# Make ODB-2 ofb and mfb files
+#
+
+. header.sh
+#
+set -x
+#
+# $1: ANTYPE
+# $2: DBTYPE
+# $3: OBTYPE
+ANTYPE=$1
+DBTYPE=$2
+OBTYPE=$3
+
+#-----------------------------------------------------------
+#   Globals: ...
+#-----------------------------------------------------------
+. include.ass
+export ODB_FEBINPATH=${BINDIR}
+
+cd $WRK || exit
+mkdir -p ODB2wrk${ANTYPE}${DBTYPE}${OBTYPE}
+cd ODB2wrk${ANTYPE}${DBTYPE}${OBTYPE}
+
+echo "Creating ODB2 files: ${ANTYPE} ${DBTYPE} ${OBTYPE}"
+ODBPREFIX=OFB
+EXPVER="${VFLDEXP: -4:4}"
+if [ ${ANTYPE} == "sfc" ]
+then
+  DIRSUFFIX=_can
+  ODBPREFIX=OFB
+  STREAM=SDA
+  ODBPREFIX=OFB
+
+  OBSQL=surf
+elif [ ${ANTYPE} == "3DVAR" -a ${DBTYPE} == "ECMA" ]
+then
+  DIRSUFFIX=var
+  OBSQL=${OBTYPE}
+  STREAM=DA
+  ODBPREFIX=OFB
+elif [ ${ANTYPE} == "3DVAR" -a ${DBTYPE} == "CCMA" ]
+then
+  DIRSUFFIX=_ccma
+  OBSQL=${OBTYPE}
+  STREAM=DA
+  ODBPREFIX=MFB
+fi
+
+ln -s ../odb${DIRSUFFIX} .
+cd odb${DIRSUFFIX}/${DBTYPE}.${OBTYPE}/
+$HM_LIB/src/odb/scripts/dcagen
+cd ../..
+odb_migrator odb${DIRSUFFIX}/${DBTYPE}.${OBTYPE} "${HM_LIB}"/nam/${OBSQL}.sql ${ODBPREFIX}_${EXPVER}_${STREAM}_${OBTYPE}_${YMD}_${HH}.odb 2>&1
+mv -f ${ODBPREFIX}_${EXPVER}_${STREAM}_${OBTYPE}_${YMD}_${HH}.odb $ARCHIVE/.
+echo "stderr from odb_migrator"
+cat odbdump.stderr
+echo "stderr from odb_migrator"
+cd ..
+rm -rf ODB2wrk${ANTYPE}${DBTYPE}${OBTYPE}
+echo "Created ODB2 file: ${ODBPREFIX}_${EXPVER}_${STREAM}_${OBTYPE}_${YMD}_${HH}.odb"
+
+trap 0
+exit

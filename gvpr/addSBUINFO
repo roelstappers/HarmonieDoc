@@ -1,0 +1,10 @@
+N[type=="ecflowtask"]{ 
+  system("grep -A17 \"INFO Job Name.*" + $.name + "\" gvpr/HM_Date_2000010709.html | grep SBU | grep -Po '\\d*\\.\\d*' > /tmp/temp");
+  int fd = openF("/tmp/temp","r")  ;
+  string SBUlabel =  readL(fd);
+  v = ARGV[0];
+  print(v);
+  label= $.name + '\\lSBU: ' + SBUlabel;
+  closeF(fd);
+
+} 

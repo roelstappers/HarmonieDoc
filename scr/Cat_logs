@@ -1,0 +1,14 @@
+#!/bin/bash
+
+ echo "Dir is $PWD"
+ ls -lrt 
+
+        for i in $*; do
+                echo "#############################"
+                echo "Start of log: ${i}"
+                echo "#############################"
+                cat ${i}
+                echo "#############################"
+                echo "End of log: ${i}"
+                echo "#############################"
+        done

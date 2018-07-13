@@ -1,0 +1,105 @@
+#!/bin/bash
+
+[ $# -lt 2 ] && { echo usage $0 '{-to,-from,-mkdir,-rm,-ls} src-file dest-file'; exit 1; }
+
+# -mkdir recursively makes directories src-file
+# -rm recursively removes files and/or directories src-file
+# -ls list files
+
+# Set default environment variabels
+ECFSLOC=${ECFSLOC-ectmp}
+ECFSGROUP=${ECFSGROUP-default}
+COMPCENTRE=${COMPCENTRE-noset}
+
+# which direction to copy
+case $1
+in
+   -to)      action=to; shift; org=$1; dest=$2 ;;
+   -fr*)     action=fr; shift; org=$1; dest=$2 ;;
+   -mk*)     action=mk; shift; dest=$1 ;;
+   -rm*)     action=rm; shift; dest=$1 ;;
+   -ls)      action=ls; shift; dest=$1 ;;
+   *)        echo usage $0 '{-to,-from,-mkdir,-rm} src-file dest-file'; exit 1 ;;
+esac
+
+[ "$dest" ] || { echo usage $0 '{-to,-from,-mkdir,-rm} src-file dest-file'; exit 1; }
+
+if [ "$COMPCENTRE" = ECMWF ] ; then
+  # Check access to ECFS: explicit specifications override ECFSLOC
+  case $action
+  in
+    to) [ `echo $dest | egrep -c '^ec:|^ectmp:'` -gt 0 ] && host2="" || host2=$ECFSLOC: ;;
+    fr) [ `echo $org | egrep -c '^ec:|^ectmp:'` -gt 0 ] && host1="" || host1=$ECFSLOC: ;;
+    *)  [ `echo $dest | egrep -c '^ec:|^ectmp:'` -gt 0 ] && host1="" || host1=$ECFSLOC: ;;
+  esac
+  case $action
+  in 
+    ls)
+      # Flat list
+      els $dest
+      ;;
+    rm)
+      # Remove ( recursive )
+      erm -R $dest 
+      ;;
+    to|fr)
+      # Copy to or from
+      ecp -o $host1$org $host2$dest || exit 1
+      [ "$SMSTRYNO" -gt 1 ] && sleep 5
+      if [ $action = to ]; then
+        if [ "$ECFSGROUP" != "default" ]; then
+          sleep 5; echgrp $ECFSGROUP $host2$dest
+        fi
+        sleep 5; echmod 640 $host2$dest
+      fi
+      ;;
+    mk)
+      edepth () {
+        depth=1
+        pth=$1
+        while [ `echo $pth | grep -c /` -gt 0 ] || [ $depth -eq 1 ]; do
+          els $pth 1>/dev/null 2>/dev/null && break
+          pth=`dirname $pth`
+          depth=`expr $depth - 1`
+        done
+      }
+      echange () {
+        pth=$1
+        until [ $depth -gt 0 ]; do
+          if [ "$ECFSGROUP" != "default" ]; then
+            echgrp $ECFSGROUP $pth
+          fi
+          echmod 750 $pth
+          pth=`dirname $pth`
+          depth=`expr $depth + 1`
+        done
+      }
+      edepth $host1$dest
+      if [ $depth -lt 1 ]; then
+        emkdir -p $host1$dest || exit 1
+      fi
+      echange $host1$dest
+      ;;
+   esac
+else
+  # The non ECMWF (ECFS)  case
+  case $action
+  in 
+    to|fr)
+      # Copy to or from
+      cp $host1$org $host2$dest
+      ;;
+    mk)
+      # mkdir
+      $MKDIR $dest
+      ;;
+    ls)
+      # Flat list
+      ls -l $dest
+      ;;
+    rm)
+      # Remove ( recursive )
+      rm -rf $dest
+      ;;
+  esac
+fi
