@@ -1,4 +1,5 @@
 N[type=="ecflowtask"] { 
   if ($.script == "")  $.script=$.name;
-  $.href= "https://hirlam.org/trac/browser/Harmonie/scr/" + $.script;
+ //  $.href= "https://hirlam.org/trac/browser/Harmonie/scr/" + $.script;
+  $.href= "https://github.com/roelstappers/Harmonie/tree/master/scr/" + $.script;
 } 
