@@ -1,8 +1,9 @@
 
 BEG_G{print("Should we include non-ecflowtasks nodes like ShuffleBufr?. Or should ShuffleBufr become an ecflowtask?" ) }
-BEG_G{print("Should we implement a gvpr to be able to access the full scripts through the hrefs") }
+BEG_G{print("LSMIXBC should me much more or apparent in figure being a major component of the Harmonie DA. As seperate ecflowtask?." ) }
+BEG_G{print("Should we implement a gvpr to be able to access the full scripts through the hrefs. Done") }
 BEG_G{print("Should we implement a gvpr to be able to access the namelist as used during an experiment through the tooltips/hrefs") }
-BEG_G{print("Should we implement a gvpr to be able to access run time/SBU usage through the tooltips. Automatically extracted from log files. Any other suggestions. NPROC?") }
+BEG_G{print("Should we implement a gvpr to be able to access run time/SBU usage through the tooltips. Automatically extracted from log files. Done see gvpr/addSBUINFO. Any other suggestions. NPROC?") }
 BEG_G{print("Should we implement a gvpr to be able to visualize the files through the hrefs and/or give summary statistics in the tooltips? e.g. active observations in ODB etc and a href to the JOT ") }
 BEG_G{print("Should we imlpement a gvpr to create a reduced graph showing only the tasks dependencies with labels (or tooltips) on the edges for the filenames") }
 BEG_G{print("Should we add Boundary handling (probably yes in simplified form) and Post Processing? What about the Build process?") }
@@ -11,7 +12,6 @@ BEG_G{print("Should we put \"output odb's\" in $ARCHIVE directly instead of afte
 BEG_G{print("Should we, to get rid of the relinking of fc_start, firs$t_guess, make some ecflow tasks optionally act as identity operators? E.g. if no Minim then MXMIN1999+0000 is still created but equal to the first-guess. Forecast should always use ANAB1999+0000 from $ARCHIVE instead of needing the relinking for fc_start.") }
 BEG_G{print("Should we, to be consistent with literature, distinguish first_guess and background in the scripts. With overlapping window DA this distincintion becomes more important") }
 BEG_G{print("Should we split the Bator script") }
-BEG_G{print("Should we move LSMIXBC out of CANARI as a seperate ECFLOW task") }
 BEG_G{print("Should we think of alternatives for bdstrategy?") }
 BEG_G{print("Should we rename CANARI_OI_MAIN as it doesn't call OI_MAIN or soda_OI_MAIN.")} 
 BEG_G{print("With the removal of all directed cycles the graph will also reveal which ecflow tasks can run in parallel, i.e. have the same rank. And it will show when tasks can be triggered in harmonie.tdf. ")} 

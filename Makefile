@@ -10,6 +10,7 @@ trac: harmonie.dot
 	 gvpr -c -f gvpr/addtooltips harmonie.dot | \
 	 gvpr -c -f gvpr/add_href_to_trac | \
 	 gvpr -c -f gvpr/addshapecolor | \
+#	 gvpr -c -f gvpr/remove_filelabelsandshape | \
 	 gvpr -c -f gvpr/removeCLIMATE | \
 	 dot -Tsvg -o svg/trac.svg
 

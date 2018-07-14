@@ -1,0 +1,2 @@
+N[type=="WRKfile" || type=="ARCHIVEfile" || type=="CONSTfile" || type=="CLIMATEfile"] {tooltip=$.label; label="";  shape="point"; color=$.fillcolor }
+
