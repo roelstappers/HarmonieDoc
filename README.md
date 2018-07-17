@@ -5,7 +5,7 @@ Create graph of ecflow tasks and file dependencies in the Harmonie scripting sys
 Needs graphviz:
 
 ```bash
-sudo apt install graphiz
+sudo apt install graphviz
 ```
 
 To make a graph  with hrefs to hirlam.org wiki (will produces harmonie.svg in the svg directory):
