@@ -8,7 +8,7 @@ Needs graphviz:
 sudo apt install graphviz
 ```
 
-To make a graph  with hrefs to hirlam.org wiki (will produces harmonie.svg in the svg directory):
+To make a graph  with hrefs to hirlam.org wiki (produces harmonie.svg in the svg directory):
 
 ```bash
 make
