@@ -4,10 +4,10 @@ N[type=="ecflowtask"] {
   
   SCRDIR="./scr/";
   fid = openF(SCRDIR + $.script,"r");
-  docstr = readL(fid);
-  while (substr(docstr,0,1) == "#") { 
-    $.tooltip  = $.tooltip + "&#13;&#10;" + docstr;
-    docstr = readL(fid);
-  }
+ 
+  docstr="";
+  while (substr(str=readL(fid),0,1) == "#") { docstr = docstr + str;}
   closeF(fid);
+  $.tooltip = gsub(docstr,"\n","&#13;&#10;");
+  
 } 
