@@ -8,17 +8,14 @@ Needs graphviz:
 sudo apt install graphviz
 ```
 
-To make a graph  with hrefs to hirlam.org wiki (produces harmonie.svg in the svg directory):
+To make a graph  with hrefs to hirlam.org wiki and github (produces harmonie.svg in the svg directory):
 
 ```bash
 make
 ```
 
-To make the graph with hrefs pointing to scripts
+In the graph a red wiki block indicates a missing href to hirlam.org wiki.  
 
-```bash
-make trac
-```
 
 To run the test. 
 ```bash
