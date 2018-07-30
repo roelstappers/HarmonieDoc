@@ -1,4 +1,41 @@
-N[type=="ecflowtask"]  {fillcolor="gold";        shape="box";     style="filled" }
+N[type=="ecflowtask" ]  {shape='plaintext'; 
+    if ($.script=="") $.script = $.name;
+
+# git log
+#    system("git log  ./scr/" + $.script + " > /tmp/temp");
+#    system("git log --pretty=format:\"%an%x09%ad\"  ./scr/" + $.script + " > /tmp/temp");
+#    int fd = openF("/tmp/temp","r");
+#    tooltip1="";
+#    for (i=0; i<5; i=i+1) {
+#      tooltip1= tooltip1 + readL(fd);
+#    }
+#    closeF(fd);
+
+#   //tooltip1 = gsub(tooltip1,'\\&',"and");  //see https://www.gnu.org/software/gawk/manual/html_node/Gory-Details.html
+#    tooltip1 = gsub(tooltip1,"\n","\\\&#10;"); //  "&#13;&#10; ---------------------------&#13;&#10;");
+#    //tooltip1 = gsub(tooltip1,"<","&lt");
+#    
+#    // tooltip1 = gsub(tooltip1,">","&gt");
+     if ($.href=="") {wikicolor="orangered";} else {wikicolor="gold";};
+
+
+     label=html($G,'<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
+         <TR> <TD COLSPAN="2" BGCOLOR="gold"> ' + $.name + ' </TD> </TR> 
+         <TR> <TD BGCOLOR="' + wikicolor + '" HREF="' + $.href + '">wiki</TD>
+         <TD BGCOLOR="gold" HREF="https://github.com/roelstappers/Harmonie/tree/master/scr/' + $.script + '"> git </TD>  
+          </TR> </TABLE>');
+
+ 
+  SCRDIR="./scr/";
+  fid = openF(SCRDIR + $.script,"r");
+ 
+  docstr="";
+  readL(fid); // this is probably just #!/bin/bash
+  while (substr(str=readL(fid),0,1) == "#") { docstr = docstr + substr(str, 2);}
+  closeF(fid);
+  $.tooltip = gsub(docstr,"\n","&#13;&#10;");
+  
+}
 N[type=="WRKfile"]     {fillcolor="powderblue";  shape="ellipse"; style="filled" }
 N[type=="ARCHIVEfile"] {fillcolor="coral";       shape="ellipse"; style="filled" }
 N[type=="CONSTfile"]   {fillcolor="peru";        shape="ellipse"; style="filled" }
