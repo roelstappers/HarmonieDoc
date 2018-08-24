@@ -1,0 +1,36 @@
+digraph cycling { 
+//splines=ortho;
+newrank=true;
+  node[style=filled,fillcolor=gold,shape=box]
+subgraph cluster_00 {
+  label="YYYYMMDD00"
+  MakeCycleInput00[label="MakeCycleInput"]
+  Cycle00[label="Cycle"]
+  PostPP00[label="PostPP"]
+  MakeCycleInput00 -> Cycle00 -> PostPP00
+}
+
+subgraph cluster_03 {
+  label="YYYYMMDD03"
+  MakeCycleInput03[label="MakeCycleInput"]
+  Cycle03[label="Cycle"]
+  PostPP03[label="PostPP"]
+  MakeCycleInput03 -> Cycle03 -> PostPP03
+}
+
+subgraph cluster_00p {
+  label="YYMMDD00+3D"
+  MakeCycleInput00p[label="MakeCycleInput"]
+  Cycle00p[label="Cycle"]
+  PostPP00p[label="PostPP"]
+  MakeCycleInput00p-> Cycle00p -> PostPP00p
+}
+
+{rank = same
+MakeCycleInput00 -> MakeCycleInput03 -> MakeCycleInput00p //[constraint=false] 
+//MakeCycleInput03 -> MakeCycleInput00p //[constraint=false]
+}
+PostPP00 -> MakeCycleInput00p[constraint=false] 
+
+
+} 
