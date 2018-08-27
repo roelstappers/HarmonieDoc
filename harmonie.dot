@@ -114,12 +114,12 @@ edge[type=staticinput]
 //---------------------------------------------------------------
 ICMSHANALp0000    -> CANARI         [label="Canari",            style=dashed]
 ICMSHANALp0000sfx -> fc_start_sfx   [label="Canari",            style=dashed]
-ICMSHANALp0000sfx -> first_guess_sfx[label="Canari",            style=dashed, constraint=false]
+ICMSHANALp0000sfx -> first_guess_sfx[label="Canari",            style=dashed, weight=0] //constraint=false]
 ICMSHANALp0000sfx -> PREPfa         [label="Canari",            style=dashed]
 //ICMSHANALp0000    -> first_guess    [label="Canari [LSMIX=T]",  style=dashed, constraint=false]
 //ICMSHANALp0000    -> fc_start       [label="Canari [LSMIX=T]",  style=dashed, constraint=false]
-MXMIN1999p0000    -> fc_start       [label="Minim",             style=dashed, constraint=false]
-ANAB1999p0000     -> first_guess    [label="Blend",             style=dashed, constraint=false]
+MXMIN1999p0000    -> fc_start       [label="Minim",             style=dashed, weight=0] // constraint=false]
+ANAB1999p0000     -> first_guess    [label="Blend",             style=dashed, weight=0] // constraint=false]
 ANAB1999p0000     -> fc_start       [label="Blend",             style=dashed]
 bdstrategy_archive-> bdstrategy     [label="Boundary_strategy", style=dashed]  // in Boundary_strategy.sms
 
