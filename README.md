@@ -1,4 +1,4 @@
-# Harmonie
+# HarmonieDoc
 
 Create graph of ecflow tasks and file dependencies in the Harmonie scripting system for data assimilation. 
 
