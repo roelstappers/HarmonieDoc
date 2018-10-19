@@ -17,7 +17,7 @@ make
 In the graph a red wiki block indicates a missing href to hirlam.org wiki.  
 
 
-To run the test. 
+To run the test: 
 ```bash
 make test
 ```
