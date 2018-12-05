@@ -1,0 +1,535 @@
+<!DOCTYPE HTML>
+
+<html>
+
+<head>
+  <title>datetime editor examples</title>
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+  <!-- Enable responsive viewport -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- jQuery -->
+  <script src="https://code.jquery.com/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
+
+  <!-- Bootstrap3 -->
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap-theme.min.css" >
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js" ></script>
+
+  <!-- Foundation
+  <script type="text/javascript" src=""></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/foundation/6.2.4/foundation.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/foundicons/3.0.0/foundation-icons.css" />
+  -->
+
+  <!-- Handlebars -->
+  <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/handlebars.js/4.0.12/handlebars.min.js"></script>
+
+  <!-- Flatpickr -->
+  <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.5.1/flatpickr.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.5.1/flatpickr.min.css" />
+
+  <!-- JSON-Editor -->
+  <script src="https://cdn.jsdelivr.net/npm/@json-editor/json-editor/dist/jsoneditor.min.js"></script>
+
+  <style type="text/css">
+  body {
+    margin: 1em;
+  }
+  </style>
+</head>
+
+<body>
+ <!--   <h2>Harmonie Config experiment</h2> -->
+
+  <div id="form"></div>
+  <script type="text/javascript">
+  // Handlebars helper for displaying timestamps in human frindly format
+  Handlebars.registerHelper("TimeStampToDateTime", function(ts) {
+    return ts ? new Date(ts * 1000) : 'empty';
+  });
+  var options = {
+    "theme": "bootstrap3",
+    "template": "handlebars",
+    "iconlib": "bootstrap3",
+ //   "object_layout" : "grid", 
+    "schema": {
+
+  "title" : "Harmonie experiment configuration", 
+  "options": {
+    "disable_properties": true,
+    "disable_edit_json": true,
+    "disable_collapse": true
+  },
+  "format": "categories",
+  "basicCategoryTitle": "Main",
+  "type": "object",
+  "required": [
+    "DTGBEG",
+    "Geometry",
+    "Nesting",
+    "Assimilation",
+    "Physics",
+    "Observations",
+  ],
+  "properties": {
+    "DTGBEG" : {
+       "type": "string",
+       "format": "datetime-local",
+       "title": "DTGBEG",
+       "options": {
+         "grid_columns": 4,
+         "placeholder": "Enter datetime",
+         "flatpickr": {
+   //        "mode" : "range",
+//           "allowInput" : true,
+           "hourIncrement": 3,
+           "time_24hr": true,
+           "dateFormat" : "YmdH",
+           "defaultHour" : 0
+         }
+       } 
+
+    },
+    "DTGEND" : {
+          "type": "string",
+          "format": "datetime-local",
+          "title": "DTGEND",
+          "options": {
+            "grid_columns": 4,
+            "placeholder": "Enter datetime",
+            "flatpickr": {
+            "hourIncrement": 3,
+            "time_24hr": true,
+            "dateFormat" : "YmdH",
+            "maxDate": $('#DTGBEG').attr('value'),
+            "defaultHour" : 0
+           }
+       } 
+    },
+    "Geometry": {
+      "type": "object",
+      "options": {
+        "disable_properties": true,
+        "disable_edit_json": true,
+        "disable_collapse": true,
+        "collapsed": false
+      },
+      "required": [
+        "DOMAIN",
+        "TOPO_SOURCE",
+        "GRID_TYPE",
+        "VLEV"
+      ],
+      "properties": {
+        "DOMAIN": {
+          "type": "string",
+          "enum": [
+            "TRAINING_10",
+            "TRAINING_2.5",
+            "TRAINING_2.0",
+            "HarmEPS_1",
+            "TURKEY_2.5",
+            "CANARIAS_2.5",
+            "HMS_ALD_8",
+            "MUSC",
+            "SWEDEN_2.5",
+            "TEST_11",
+            "TEST_11_4DVAR",
+            "TEST_1",
+            "NORWAY_SOUTH_500",
+            "TEST_11_BIG",
+            "TEST_8",
+            "IRELAND150",
+            "IRELAND25",
+            "IRELAND25_090",
+            "NORWAY_POLAR",
+            "RCR_POLAR",
+            "AROME_2.5",
+            "TEST_2.5",
+            "SCANDINAVIA",
+            "SCANDINAVIA_ROTM",
+            "SCANDINAVIA_5.5",
+            "SWEDEN_NORTH",
+            "SWEDEN_SOUTH",
+            "SWEDEN_5.5",
+            "FINLAND_SOUTH",
+            "FINLAND",
+            "FRANCE_7.5",
+            "FRANCE_2.5",
+            "GLAMEPS_v0",
+            "GLAMEPSV2",
+            "NORWAY",
+            "NORWAY_2.5KM",
+            "NORWAY_4KM",
+            "NORWAY_5.5",
+            "DENMARK",
+            "DKCOEXP",
+            "DKA",
+            "NEA",
+            "IGA",
+            "GREENLAND",
+            "NARSARSUAQ",
+            "GLA",
+            "GLB",
+            "H2500",
+            "ICELAND0",
+            "ICELAND",
+            "IBERIA",
+            "IBERIA_8",
+            "IBERIA_2.5",
+            "IBERIA_2.5_30_24",
+            "IBERIAxxm_2.5",
+            "IBERIAxl_2.5",
+            "LACE",
+            "MEDITERRANEAN",
+            "NETHERLAND",
+            "METCOOP25B",
+            "METCOOP25C",
+            "AROME_ARCTIC",
+            "AROME_ARCTIC_ACCESS",
+            "LITHUANIA",
+            "TEST_OBS"
+          ],
+          "default": "DKCOEXP"
+        },
+        "TOPO_SOURCE": {
+          "type": "string",
+          "title": "Input source for orography",
+          "enum": [
+            "gmted2010",
+            "gtopo30"
+          ],
+          "default": "gmted2010"
+        },
+        "GRID_TYPE": {
+          "type": "string",
+          "title": "Type of grid",
+          "enum": [
+            "LINEAR",
+            "QUADRATIC",
+            "CUBIC"
+          ],
+          "default": "LINEAR"
+        },
+        "VLEV": {
+          "type": "string",
+          "title": "Vertical level definition",
+          "enum": [
+            "ECMWF_90",
+            "HMS_49",
+            "ECMWF_60",
+            "HIRLAM_40",
+            "HIRLAM_60",
+            "MF_60",
+            "MF_70",
+            "MF_90",
+            "40",
+            "65",
+            "Prague_87",
+            "37"
+          ],
+          "default": "65"
+        }
+      }
+    },
+    "Nesting": {
+      "type": "object",
+      "options": {
+        "disable_properties": true,
+        "disable_edit_json": true,
+        "disable_collapse": true,
+        "collapsed": false
+      },
+      "required": [
+        "HOST_MODEL",
+        "HOST_SURFEX",
+        "SURFEX_INPUT_FORMAT",
+        "BDSTRATEGY",
+        "BDINT"
+      ],
+      "properties": {
+        "HOST_MODEL": {
+          "type": "string",
+          "enum": [
+            "ifs",
+            "hir",
+            "ald",
+            "ala",
+            "aro"
+          ],
+          "default": "ifs"
+        },
+        "HOST_SURFEX": {
+          "title": "host model has run with surfex?",
+          "type": "string",
+          "enum": [
+            "yes",
+            "no"
+          ],
+          "default": "no"
+        },
+        "SURFEX_INPUT_FORMAT": {
+          "type": "string",
+          "title": "Input format for host model run with surfex",
+          "default": "lfi",
+          "enum": [
+            "fa",
+            "lfi"
+          ]
+        },
+        "BDSTRATEGY": {
+          "type": "string",
+          "enum": [
+            "available",
+            "simulate_operational",
+            "same_forecast",
+            "analysis_only",
+            "e40",
+            "era5",
+            "latest",
+            "RCR_operational"
+          ],
+          "default": "simulate_operational"
+        },
+        "BDINT": {
+          "type": "integer",
+          "description": "Boundary interval in hours",
+          "enum": [
+            1,
+            2,
+            3,
+            6,
+            12,
+            24
+          ],
+          "default": 1
+        }
+      }
+    },
+    "Assimilation": {
+      "type" : "object",
+      "options": {
+        "disable_properties": true,
+        "disable_edit_json": true,
+        "disable_collapse": true
+      },
+      "required" : ["LSMIXBC","ANAATMO"],
+      "properties" : {
+        "ANAATMO" : {
+            "type" : "string",
+            "enum" : ["3DVAR","4DVAR","blending","none"], 
+            "options" : {"hidden" : true} 
+        },
+        "LSMIXBC" : {
+           "type" : "string",
+           "enum" : ["yes", "no"],
+           "title" : "Large scale mixing" 
+        } 
+
+       },
+      "additionalProperties" : false, 
+      "oneOf": [
+        {
+          "title": "3DVAR",
+          "type": "object",
+          "properties": {
+            "ANAATMO": {
+              "enum": [
+                "3DVAR"
+              ],
+              "default": "3DVAR",
+            },
+            "LSMIXBC": {
+              "enum" : ["yes"],
+              "default": "yes"
+            }
+          }
+        },
+        {
+          "title": "4DVAR",
+          "type": "object",
+          "required" : ["NOUTERLOOP", "ILRES", "TSTEP4D"],
+          "properties": {
+            "ANAATMO": {
+              "type": "string",
+              "enum": [
+                "4DVAR"
+              ],
+              "default": "4DVAR",
+              "options": {
+                "hidden": "true"
+              }
+            },
+            "NOUTERLOOP": {
+              "type": "integer",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "default": 2
+            },
+            "ILRES": {
+              "type": "string",
+              "default": "2,2"
+            },
+             "TSTEP4D": {
+              "type": "string",
+              "default": "120,120"
+            },
+            "LSMIXBC" : {
+               "default" : "no"
+            } 
+          }
+        },
+        {
+          "title" : "blending",
+          "properties" : { "ANAATMO" : { "default" : "blending" }} 
+        },
+        {
+          "title" : "none",
+          "properties" : { "ANAATMO" : { "default" : "none" }}
+        }
+      ]
+    },
+    "Physics": {
+      "type" : "object",
+      "options": {
+        "disable_properties": true,
+        "disable_edit_json": true,
+        "disable_collapse": true
+      },
+      "oneOf": [
+        {
+          "title": "Arome",
+          "type": "object",
+          "required": [
+            "PHYSICS",
+            "MASS_FLUX_SCHEME",
+            "HARATU"
+          ],
+          "properties": {
+            "PHYSICS": {
+              "type": "string",
+              "enum": [
+                "arome"
+              ],
+              "default": "arome",
+              "options": {
+                "hidden": "true"
+              }
+            },
+            "HARATU": {
+              "type": "boolean",
+              "default": true
+            },
+            "MASS_FLUX_SCHEME": {
+              "type": "string",
+              "description": "edkf: AROME-MF version, edmfm: Eddy Diffusivity Mass Flux  Meso-scale (KNMI)",
+              "enum": [
+                "edkf",
+                "edmfm"
+              ],
+              "default": "edmfm"
+            }
+          }
+        },
+        {
+          "title": "Alaro",
+          "type": "object",
+          "required": [
+            "ALARO_VERSION",
+            "PHYSICS"
+          ],
+          "properties": {
+            "PHYSICS": {
+              "type": "string",
+              "enum": [
+                "alaro"
+              ],
+              "default": "alaro",
+              "options": {
+                "hidden": "true"
+              }
+            },
+            "ALARO_VERSION": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ],
+              "default": 0
+            }
+          }
+        }
+      ]
+    },
+    "Observations": {
+      "type": "object",
+      "options": {
+        "collapsed": false 
+      },
+      "required": [
+        "OBDIR",
+        "SINGLEOBS",
+        "USE_MSG",
+        "MSG_PATH"
+      ],
+      "properties": {
+        "OBDIR": {
+          "type": "string",
+          "default": "$HMDATA/observations"
+        },
+        "SINGLEOBS": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no"
+          ],
+          "default": "no"
+        },
+        "USE_MSG": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no"
+          ],
+          "default": "no"
+        },
+        "MSG_PATH": {
+          "type": "string",
+          "default": "$SCRATCH/CLOUDS"
+        }
+      }
+    },
+//    "4DVAR Setting": {},
+//    "DFI Settings": {},
+      "EPS": {"type" : "object"},
+//    "SPPT Stochastic Perturbed Parameterisation Tendencies": {},
+      "EDA": {"type" : "object"},
+//    "Climate files": {},
+      "Postprocessing": {"type" : "object"},
+      "Archiving": {"type" : "object"},
+//    "GRIB": {},
+//    "Verification extraction": {},
+//    "Field verification": {},
+//    "Observation monitoring": {}
+  }
+
+    }
+  }
+  var element = document.getElementById('form');
+  var editor = new JSONEditor(element, options);
+  </script>
+  <div class='span4 col-md-4 columns four large-4 col s4'>
+        <textarea id='output' style='width: 100%; height: 300px; font-family: monospace;' class='form-control'></textarea>
+       </div>
+
+</body>
+
+</html>
